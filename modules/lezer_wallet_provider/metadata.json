@@ -1,0 +1,32 @@
+{
+  "name": "lezer_wallet_provider",
+  "version": "1.0.0",
+  "description": "Lezer LEZ Wallet & Provider SDK — session-gated key custody, Token/ATA engine, and LP-0023 verified approval broker",
+  "author": "Lezer Team",
+  "type": "core",
+  "interface": "cdylib",
+  "category": "wallet",
+  "icon": "src/icons/icon.png",
+  "main": "lezer_wallet_provider_plugin",
+  "dependencies": [],
+  "include": [],
+  "capabilities": [],
+  "codegen": {
+    "lidl": "lezer_wallet_provider.lidl"
+  },
+  "nix": {
+    "external_libraries": [
+      {
+        "name": "lezer_wallet_provider"
+      }
+    ],
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "cmake": {
+      "find_packages": [],
+      "extra_include_dirs": []
+    }
+  }
+}
