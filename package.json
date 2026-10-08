@@ -1,0 +1,19 @@
+{
+  "name": "lezer-wallet",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "check:boundaries": "./tooling/check-boundaries.sh",
+    "spikes": "./tooling/run-spikes.sh",
+    "test:rust": "cargo test --workspace",
+    "test": "./tooling/check-boundaries.sh && cargo test --workspace"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,92 @@
+# ── Rust / Cargo ─────────────────────────────────────────────────────────────
+# Covers root workspace + programs/* guest workspaces (excluded from root ws)
+target/
+**/*.rs.bk
+*.pdb
+
+# ── RISC Zero / SPEL guest artifacts ─────────────────────────────────────────
+*.elf
+
+# ── Logos Basecamp packaging ─────────────────────────────────────────────────
+*.lgx
+*.lgx.sha256
+
+# ── Node / TypeScript ────────────────────────────────────────────────────────
+node_modules/
+dist/
+out/                      # Next.js static export output
+.next/
+.turbo/
+.vercel/
+*.tsbuildinfo
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Nix ──────────────────────────────────────────────────────────────────────
+result
+result-*
+.direnv/
+
+# ── CMake / Qt (module builds) ───────────────────────────────────────────────
+# NOTE: programs/*/Makefile is hand-written and must stay tracked — only
+# generated Makefiles under modules/ are ignored.
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+cmake-build-*/
+build/
+modules/**/Makefile
+*.qmlc
+*.jsc
+*.metatypes
+moc_*
+qrc_*
+ui_*.h
+
+# ── Coverage / profiling ─────────────────────────────────────────────────────
+coverage/
+htmlcov/
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report*
+
+# ── Secrets & local wallet state ─────────────────────────────────────────────
+# Nothing in here may ever be committed. ~ and CI inject these at runtime.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mnemonic
+vault.enc
+vault.enc.*
+.lezer/                   # local runtime vault/cache if pointed inside repo
+
+# ── Logs / scratch ───────────────────────────────────────────────────────────
+*.log
+logs/
+tmp/
+*.tmp
+*.bak
+*.orig
+.cache/
+
+# ── Python (tooling helpers) ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+
+# ── OS / editors ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+*.iml
+.vscode/
+.zed/
+.claude/settings.local.json
