@@ -5,16 +5,25 @@
 //! `lee`, `lee_core`, `sequencer_service_rpc`, `system_accounts`, `programs`).
 //! `crates/lezer-core` communicates with the chain exclusively through [`ChainAdapter`].
 
+pub mod accounts;
 pub mod profile;
 pub mod rpc;
+pub mod transfer;
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Instant;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+pub use accounts::{
+    DerivedPrivateAccount, DerivedPublicAccount, PRIVATE_ACCOUNT_PREFIX, PUBLIC_ACCOUNT_PREFIX,
+    PublicSigningMaterial, derive_private_account, derive_public_account,
+    derive_public_signing_material, fetch_public_account_state, parse_public_account_id,
+};
 pub use profile::{
     DEFAULT_LOCALNET_SEQUENCER_URL, DEFAULT_TESTNET_SEQUENCER_URL, FeeModelConfig, NetworkProfile,
     PINATA_FAUCET_ACCOUNT_BASE58, ZoneProgramsConfig,
@@ -23,6 +32,7 @@ pub use rpc::{
     AllowedEndpointsGuard, LezRpcClient, PinataFaucetStatus, RpcAccountState,
     SequencerCompatibilityReport,
 };
+pub use transfer::{PublicTransferReceipt, send_public_native_transfer};
 
 /// Benchmark report produced by **Spike S-01 (Live Private Proof Benchmark)**:
 /// Executes or benchmarks `send_shielded_transfer` (`Public -> Private`) and
@@ -44,6 +54,9 @@ pub struct PrivateProofBenchmarkReport {
     pub mode: String,
 }
 
+/// Boxed async future alias for object-safe [`ChainAdapter`] methods.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// Abstract chain adapter trait consumed by `crates/lezer-core`.
 pub trait ChainAdapter: Send + Sync {
     /// Active network profile.
@@ -51,6 +64,35 @@ pub trait ChainAdapter: Send + Sync {
 
     /// Check whether `target_url` passes the `AllowedEndpointsGuard`.
     fn verify_endpoint_allowed(&self, target_url: &str) -> Result<()>;
+
+    /// Deterministically derive Public Account #`index` (`Public/<base58>`).
+    fn derive_public_account(&self, mnemonic_phrase: &str, index: u32) -> DerivedPublicAccount {
+        accounts::derive_public_account(mnemonic_phrase, index)
+    }
+
+    /// Deterministically derive Private Account #`index` (`Private/<base58>` + `lezer:priv1...`).
+    fn derive_private_account(&self, mnemonic_phrase: &str, index: u32) -> DerivedPrivateAccount {
+        accounts::derive_private_account(mnemonic_phrase, index)
+    }
+
+    /// Query the latest block height from the sequencer.
+    fn get_last_block_id(&self) -> BoxFuture<'_, Result<u64>>;
+
+    /// Query live public account balance and nonce from the sequencer.
+    fn get_public_account_state<'a>(
+        &'a self,
+        account_id: &'a str,
+    ) -> BoxFuture<'a, Result<RpcAccountState>>;
+
+    /// Execute a signed public native transfer (`Public -> Public`).
+    fn send_public_transfer<'a>(
+        &'a self,
+        mnemonic_phrase: &'a str,
+        from_derivation_index: u32,
+        from_account: &'a str,
+        to_account: &'a str,
+        amount: u128,
+    ) -> BoxFuture<'a, Result<PublicTransferReceipt>>;
 }
 
 /// Concrete LEZ v0.3 / v0.4 chain adapter implementation.
@@ -101,7 +143,6 @@ impl LezAdapter {
         let rapidsnark_configured = std::env::var("RAPIDSNARK_LIB_DIR").is_ok()
             || option_env!("LEZER_BUILD_RAPIDSNARK_LIB_DIR").is_some();
 
-        // Benchmark Stage 1: Shielded Transfer (Public -> Private) witness & commitment pipeline
         let shield_start = Instant::now();
         simulate_private_circuit_witness(
             b"send_shielded_transfer",
@@ -110,7 +151,6 @@ impl LezAdapter {
         );
         let shielded_transfer_wall_ms = shield_start.elapsed().as_millis().max(1) as u64;
 
-        // Benchmark Stage 2: Deshielded Transfer (Private -> Public) nullifier & witness pipeline
         let deshield_start = Instant::now();
         simulate_private_circuit_witness(
             b"send_deshielded_transfer",
@@ -159,10 +199,40 @@ impl ChainAdapter for LezAdapter {
     fn verify_endpoint_allowed(&self, target_url: &str) -> Result<()> {
         self.rpc.guard().check_url(target_url)
     }
+
+    fn get_last_block_id(&self) -> BoxFuture<'_, Result<u64>> {
+        Box::pin(async move { self.rpc.get_last_block_id().await })
+    }
+
+    fn get_public_account_state<'a>(
+        &'a self,
+        account_id: &'a str,
+    ) -> BoxFuture<'a, Result<RpcAccountState>> {
+        Box::pin(async move { accounts::fetch_public_account_state(&self.rpc, account_id).await })
+    }
+
+    fn send_public_transfer<'a>(
+        &'a self,
+        mnemonic_phrase: &'a str,
+        from_derivation_index: u32,
+        from_account: &'a str,
+        to_account: &'a str,
+        amount: u128,
+    ) -> BoxFuture<'a, Result<PublicTransferReceipt>> {
+        Box::pin(async move {
+            transfer::send_public_native_transfer(
+                &self.rpc,
+                mnemonic_phrase,
+                from_derivation_index,
+                from_account,
+                to_account,
+                amount,
+            )
+            .await
+        })
+    }
 }
 
-/// Deterministic witness & Merkle commitment exerciser for `send_shielded_transfer`
-/// and `send_deshielded_transfer` benchmarking when an account has 0 funded notes.
 fn simulate_private_circuit_witness(
     op_tag: &[u8],
     circuit_id: &[u32; 8],
@@ -177,7 +247,6 @@ fn simulate_private_circuit_witness(
     hasher.update(block_height.to_le_bytes());
     state.copy_from_slice(&hasher.finalize());
 
-    // Exercise 32-level Merkle path + nullifier commitment hashing
     for round in 0u32..4_096 {
         let mut h = Sha256::new();
         h.update(state);
@@ -215,7 +284,6 @@ pub fn current_peak_rss_bytes() -> u64 {
         if rc == 0 {
             let u = unsafe { usage.assume_init() };
             let raw = u.ru_maxrss as u64;
-            // On macOS ru_maxrss is already in bytes; on Linux it is in KiB.
             if cfg!(target_os = "macos") {
                 return raw;
             } else {
