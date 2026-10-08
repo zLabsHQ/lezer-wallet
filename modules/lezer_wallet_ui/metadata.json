@@ -1,0 +1,27 @@
+{
+  "name": "lezer_wallet_ui",
+  "display_name": "Lezer Wallet",
+  "version": "1.0.0",
+  "type": "ui_qml",
+  "interface": "universal",
+  "category": "wallet",
+  "description": "Lezer LEZ Wallet — public & private accounts, fungible tokens & ATAs, approval broker, and LP-0023 verifier",
+  "author": "Lezer Team",
+  "icon": "src/icons/icon.png",
+  "view": "qml/LezerWalletView.qml",
+  "dependencies": ["lezer_wallet_provider"],
+  "codegen": {},
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": ["qt6.qtdeclarative", "qt6.qtwebview"]
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
