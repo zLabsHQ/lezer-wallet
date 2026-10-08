@@ -1,0 +1,27 @@
+{
+  "name": "lezer_testimonial_ui",
+  "display_name": "Lezer Testimonials",
+  "version": "1.0.0",
+  "type": "ui_qml",
+  "interface": "universal",
+  "category": "wallet",
+  "description": "Lezer LP-0021 Sharded On-Chain Testimonial Mini-App (`lp0021-lezer`)",
+  "author": "Lezer Team",
+  "icon": "src/icons/icon.png",
+  "view": "qml/TestimonialView.qml",
+  "dependencies": ["lezer_wallet_provider"],
+  "codegen": {},
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": ["qt6.qtdeclarative", "qt6.qtwebview"]
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
