@@ -17,8 +17,10 @@ lezer-core = { path = "../lezer-core" }
 lezer-adapter = { path = "../lezer-adapter" }
 anyhow.workspace = true
 clap.workspace = true
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
