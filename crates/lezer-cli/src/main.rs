@@ -11,8 +11,11 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use commands::account::AccountSubcommand;
+use commands::faucet::FaucetSubcommand;
+use commands::testimonial::TestimonialSubcommand;
+use commands::token::TokenSubcommand;
 use lezer_adapter::LezAdapter;
-use lezer_core::{LezerError, WalletEngine, default_lezer_home};
+use lezer_core::{CANONICAL_SUBMISSION_ID, LezerError, WalletEngine, default_lezer_home};
 use serde_json::{Value, json};
 
 #[derive(Parser, Debug)]
@@ -81,6 +84,30 @@ enum Commands {
         #[arg(long)]
         amount: u128,
     },
+    /// Piñata Proof-of-Work Faucet commands (`info`, `claim`).
+    Faucet {
+        #[command(subcommand)]
+        sub: FaucetSubcommand,
+    },
+    /// Fungible Token Program (`TOKEN_ID`) and Associated Token Account (`ATA`) commands.
+    Token {
+        #[command(subcommand)]
+        sub: TokenSubcommand,
+    },
+    /// LP-0021 Sharded On-Chain Testimonial commands (`submit`, `list`).
+    Testimonial {
+        #[command(subcommand)]
+        sub: TestimonialSubcommand,
+    },
+    /// Stateless 16-shard evaluator adoption verifier (`lezer verify-adoption --submission-id lp0021-lezer`).
+    VerifyAdoption {
+        /// Submission identifier to audit (defaults to `lp0021-lezer`).
+        #[arg(long, default_value = CANONICAL_SUBMISSION_ID)]
+        submission_id: String,
+        /// Optional sequencer RPC URL override.
+        #[arg(long)]
+        sequencer: Option<String>,
+    },
     /// Run Phase 0 pre-build live testnet spikes (S-01, S-02).
     Spikes,
 }
@@ -92,9 +119,6 @@ struct IsolatedJsonWriter {
 }
 
 impl IsolatedJsonWriter {
-    /// When `isolate` is true (`--json`), duplicates fd 1 (`stdout`) to a private fd
-    /// and redirects standard fd 1 (`stdout`) to fd 2 (`stderr`) before starting
-    /// the tokio runtime or upstream libraries.
     fn setup(isolate: bool) -> Self {
         #[cfg(unix)]
         {
@@ -188,6 +212,27 @@ fn main() {
             Commands::Transfer { from, to, amount } => {
                 commands::transfer::handle_transfer(&mut engine, &password, &from, &to, amount)
                     .await
+            }
+            Commands::Faucet { sub } => {
+                commands::faucet::handle_faucet_subcommand(&mut engine, &password, sub).await
+            }
+            Commands::Token { sub } => {
+                commands::token::handle_token_subcommand(&mut engine, &password, sub)
+            }
+            Commands::Testimonial { sub } => {
+                commands::testimonial::handle_testimonial_subcommand(&mut engine, &password, sub)
+            }
+            Commands::VerifyAdoption {
+                submission_id,
+                sequencer,
+            } => {
+                let seq_url = sequencer
+                    .unwrap_or_else(|| engine.profile().sequencer_url.clone());
+                commands::verify_adoption::handle_verify_adoption(
+                    engine.testimonial_ledger_path(),
+                    &submission_id,
+                    &seq_url,
+                )
             }
             Commands::Spikes => unreachable!(),
         }
