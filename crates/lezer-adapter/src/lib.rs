@@ -6,8 +6,12 @@
 //! `crates/lezer-core` communicates with the chain exclusively through [`ChainAdapter`].
 
 pub mod accounts;
+pub mod ata;
+pub mod faucet;
 pub mod profile;
 pub mod rpc;
+pub mod simulate;
+pub mod token;
 pub mod transfer;
 
 use std::collections::BTreeMap;
@@ -24,6 +28,12 @@ pub use accounts::{
     PublicSigningMaterial, derive_private_account, derive_public_account,
     derive_public_signing_material, fetch_public_account_state, parse_public_account_id,
 };
+pub use ata::{ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_TAG, DerivedAta, decode_id_bytes_32, derive_ata};
+pub use faucet::{
+    FAUCET_PRIZE_LEZ, FaucetClaimReceipt, FaucetInfoView, MAX_STALE_CHALLENGE_RETRIES,
+    MAX_SUPPORTED_DIFFICULTY_BYTES, PinataChallenge, claim_from_faucet, get_faucet_info,
+    solve_pow_challenge, verify_pow_solution,
+};
 pub use profile::{
     DEFAULT_LOCALNET_SEQUENCER_URL, DEFAULT_TESTNET_SEQUENCER_URL, FeeModelConfig, NetworkProfile,
     PINATA_FAUCET_ACCOUNT_BASE58, ZoneProgramsConfig,
@@ -31,6 +41,14 @@ pub use profile::{
 pub use rpc::{
     AllowedEndpointsGuard, LezRpcClient, PinataFaucetStatus, RpcAccountState,
     SequencerCompatibilityReport,
+};
+pub use simulate::{
+    ComputeEstimate, SimulatedBalanceDelta, SimulationOutcome, estimate_cycles_for_kind,
+    simulate_transfer_precheck,
+};
+pub use token::{
+    TOKEN_PROGRAM_TAG, TokenDefinitionReceipt, TokenOperationReceipt, compute_token_tx_hash,
+    derive_token_definition_id,
 };
 pub use transfer::{PublicTransferReceipt, send_public_native_transfer};
 
@@ -93,6 +111,16 @@ pub trait ChainAdapter: Send + Sync {
         to_account: &'a str,
         amount: u128,
     ) -> BoxFuture<'a, Result<PublicTransferReceipt>>;
+
+    /// Query live Piñata PoW faucet status.
+    fn faucet_info(&self) -> BoxFuture<'_, Result<FaucetInfoView>>;
+
+    /// Solve the Piñata PoW challenge and claim 150 LEZ for `recipient_account`.
+    fn faucet_claim<'a>(
+        &'a self,
+        recipient_account: &'a str,
+        current_cached_balance: u128,
+    ) -> BoxFuture<'a, Result<FaucetClaimReceipt>>;
 }
 
 /// Concrete LEZ v0.3 / v0.4 chain adapter implementation.
@@ -229,6 +257,20 @@ impl ChainAdapter for LezAdapter {
                 amount,
             )
             .await
+        })
+    }
+
+    fn faucet_info(&self) -> BoxFuture<'_, Result<FaucetInfoView>> {
+        Box::pin(async move { faucet::get_faucet_info(&self.rpc).await })
+    }
+
+    fn faucet_claim<'a>(
+        &'a self,
+        recipient_account: &'a str,
+        current_cached_balance: u128,
+    ) -> BoxFuture<'a, Result<FaucetClaimReceipt>> {
+        Box::pin(async move {
+            faucet::claim_from_faucet(&self.rpc, recipient_account, current_cached_balance).await
         })
     }
 }
