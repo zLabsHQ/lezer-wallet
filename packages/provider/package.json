@@ -1,0 +1,13 @@
+{
+  "name": "@lezer/provider",
+  "version": "1.0.0",
+  "description": "Lezer Wallet Provider SDK for Logos Basecamp dApps (TypeScript & QML)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "files": [
+    "src",
+    "qml"
+  ]
+}
