@@ -1,0 +1,8 @@
+[package]
+name = "lezer_testimonial"
+version = "1.0.0"
+edition = "2024"
+
+[spel]
+guest_bin = "testimonial"
+idl_output = "idl/lezer_testimonial-idl.json"
