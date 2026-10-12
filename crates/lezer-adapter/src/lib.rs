@@ -9,6 +9,7 @@ pub mod accounts;
 pub mod ata;
 pub mod faucet;
 pub mod profile;
+pub mod prover;
 pub mod rpc;
 pub mod simulate;
 pub mod token;
@@ -24,9 +25,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 pub use accounts::{
-    DerivedPrivateAccount, DerivedPublicAccount, PRIVATE_ACCOUNT_PREFIX, PUBLIC_ACCOUNT_PREFIX,
-    PublicSigningMaterial, derive_private_account, derive_public_account,
-    derive_public_signing_material, fetch_public_account_state, parse_public_account_id,
+    DecodedPrivateReceiveUri, DerivedPrivateAccount, DerivedPublicAccount, EncryptedPrivateNote,
+    LEZER_PRIVATE_URI_PREFIX, PRIVATE_ACCOUNT_PREFIX, PUBLIC_ACCOUNT_PREFIX, PublicSigningMaterial,
+    compute_view_tag_u32, decode_private_receive_uri, derive_private_account,
+    derive_public_account, derive_public_signing_material, derive_spend_nullifier,
+    encode_private_receive_uri, fetch_public_account_state, parse_private_account_or_uri,
+    parse_public_account_id, scan_notes_with_view_tag,
 };
 pub use ata::{ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_TAG, DerivedAta, decode_id_bytes_32, derive_ata};
 pub use faucet::{
@@ -38,6 +42,7 @@ pub use profile::{
     DEFAULT_LOCALNET_SEQUENCER_URL, DEFAULT_TESTNET_SEQUENCER_URL, FeeModelConfig, NetworkProfile,
     PINATA_FAUCET_ACCOUNT_BASE58, ZoneProgramsConfig,
 };
+pub use prover::{ProverStage, ProverStageEvent, ZkProofArtifact, generate_zk_proof};
 pub use rpc::{
     AllowedEndpointsGuard, LezRpcClient, PinataFaucetStatus, RpcAccountState,
     SequencerCompatibilityReport,
@@ -50,7 +55,10 @@ pub use token::{
     TOKEN_PROGRAM_TAG, TokenDefinitionReceipt, TokenOperationReceipt, compute_token_tx_hash,
     derive_token_definition_id,
 };
-pub use transfer::{PublicTransferReceipt, send_public_native_transfer};
+pub use transfer::{
+    PublicTransferReceipt, TransferPrivacyMode, classify_transfer_endpoints,
+    execute_zk_native_transfer, send_public_native_transfer,
+};
 
 /// Benchmark report produced by **Spike S-01 (Live Private Proof Benchmark)**:
 /// Executes or benchmarks `send_shielded_transfer` (`Public -> Private`) and

@@ -136,6 +136,24 @@ pub struct TrackedTokenRecord {
     pub mint_authority: Option<String>,
 }
 
+/// Write-ahead pending private spend record (`PendingPrivateSpend`, `docs/01` §3.3 & `docs/10` §4.2).
+///
+/// Written to `vault.enc` *before* ZK proof generation/broadcast begins so that if Basecamp
+/// or the machine crashes mid-proof, the locked nullifiers are tracked and reconciled on
+/// restart — preventing accidental double-spend rejections or orphaned private notes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPrivateSpend {
+    pub proposal_id: String,
+    pub from_account: String,
+    pub to_account: String,
+    pub asset_id: String,
+    pub amount: String,
+    pub nullifiers: Vec<String>,
+    pub tx_hash: Option<String>,
+    pub status: String,
+    pub created_at: u64,
+}
+
 /// Write-ahead transaction & nullifier journal entry (prevents double-spends on crash).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxJournalEntry {
@@ -184,6 +202,10 @@ pub struct CanonicalWalletStateV1 {
     /// Write-ahead transaction & nullifier journal.
     #[zeroize(skip)]
     pub tx_journal: Vec<TxJournalEntry>,
+    /// Write-ahead pending private note spends (`PendingPrivateSpend`) for mid-proof crash recovery.
+    #[serde(default)]
+    #[zeroize(skip)]
+    pub pending_private_spends: Vec<PendingPrivateSpend>,
     /// Configured network/zone profile (`"lez-testnet-0.4"`, `"lez-localnet"`, etc.).
     #[zeroize(skip)]
     pub active_zone: String,
@@ -205,6 +227,7 @@ impl CanonicalWalletStateV1 {
             active_sessions: Vec::new(),
             tracked_tokens: Vec::new(),
             tx_journal: Vec::new(),
+            pending_private_spends: Vec::new(),
             active_zone,
             backup_meta: None,
         }

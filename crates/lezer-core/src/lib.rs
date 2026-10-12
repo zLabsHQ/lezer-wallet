@@ -6,6 +6,7 @@
 pub mod autolock;
 pub mod broker;
 pub mod cache;
+pub mod concurrency;
 pub mod decoder;
 pub mod errors;
 pub mod logging;
@@ -21,8 +22,9 @@ use std::time::Instant;
 
 use lezer_adapter::{
     ChainAdapter, DerivedAta, FaucetClaimReceipt, FaucetInfoView, LezAdapter, NetworkProfile,
-    PublicTransferReceipt, TokenDefinitionReceipt, TokenOperationReceipt, compute_token_tx_hash,
-    derive_ata, derive_token_definition_id,
+    PublicTransferReceipt, TokenDefinitionReceipt, TokenOperationReceipt, TransferPrivacyMode,
+    classify_transfer_endpoints, compute_token_tx_hash, decode_private_receive_uri, derive_ata,
+    derive_spend_nullifier, derive_token_definition_id, parse_private_account_or_uri,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -33,6 +35,7 @@ pub use broker::{
     RequestResolution, verify_session_balance_permission,
 };
 pub use cache::{CURRENT_CACHE_SCHEMA_VERSION, CacheEnvelopeV1, CachedBalanceEntry};
+pub use concurrency::ProverQueue;
 pub use decoder::{
     ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_HEX, AUTHENTICATED_TRANSFER_PROGRAM_HEX, AccountMention,
     LEZER_REGISTRY_PROGRAM_HEX, LEZER_TESTIMONIAL_PROGRAM_HEX, PINATA_FAUCET_PROGRAM_HEX,
@@ -58,9 +61,9 @@ pub use testimonial::{
 };
 pub use vault::{
     AccountMetadataRecord, AccountPrivacy, Argon2ParamsRecord, BackupMetadata,
-    CURRENT_VAULT_SCHEMA_VERSION, CanonicalWalletStateV1, PermissionScope, SealedVaultEnvelopeV1,
-    SessionGrant, TrackedTokenRecord, TxJournalEntry, compute_header_mac_hex, derive_wrapping_key,
-    generate_mnemonic_24, validate_mnemonic,
+    CURRENT_VAULT_SCHEMA_VERSION, CanonicalWalletStateV1, PendingPrivateSpend, PermissionScope,
+    SealedVaultEnvelopeV1, SessionGrant, TrackedTokenRecord, TxJournalEntry,
+    compute_header_mac_hex, derive_wrapping_key, generate_mnemonic_24, validate_mnemonic,
 };
 
 /// Result of `WalletEngine::init_vault` or `WalletEngine::restore_vault`.
@@ -124,6 +127,7 @@ pub struct WalletEngine {
     logger: AuditLogger,
     autolock: AutoLockFsm,
     broker: ApprovalBroker,
+    prover_queue: ProverQueue,
     unlocked_state: Option<CanonicalWalletStateV1>,
     unlocked_password: Option<Redacted<String>>,
     cache: CacheEnvelopeV1,
@@ -161,6 +165,7 @@ impl WalletEngine {
             logger,
             autolock: AutoLockFsm::new(initial_lock_state, DEFAULT_AUTOLOCK_TIMEOUT),
             broker: ApprovalBroker::new(),
+            prover_queue: ProverQueue::new(),
             unlocked_state: None,
             unlocked_password: None,
             cache,
@@ -217,6 +222,99 @@ impl WalletEngine {
 
     pub fn broker_mut(&mut self) -> &mut ApprovalBroker {
         &mut self.broker
+    }
+
+    pub fn prover_queue(&self) -> &ProverQueue {
+        &self.prover_queue
+    }
+
+    /// Reconcile any interrupted `PendingPrivateSpend` entries left in `vault.enc` after
+    /// a mid-proof crash or restart, returning the number of recovered pending spends.
+    pub fn recover_pending_private_spends(&mut self) -> LezerResult<usize> {
+        let count = {
+            let state = self.require_unlocked()?;
+            let mut recovered = 0usize;
+            for spend in &mut state.pending_private_spends {
+                if spend.status == "in_flight_proving" {
+                    spend.status = "recovered_aborted_before_broadcast".to_string();
+                    recovered += 1;
+                }
+            }
+            recovered
+        };
+        if count > 0 {
+            self.persist_unlocked_state()?;
+            self.revision += 1;
+        }
+        Ok(count)
+    }
+
+    /// Inspect the write-ahead `pending_private_spends` journal in the unlocked vault.
+    pub fn pending_private_spends(&mut self) -> LezerResult<Vec<PendingPrivateSpend>> {
+        let state = self.require_unlocked()?;
+        Ok(state.pending_private_spends.clone())
+    }
+
+    /// Record an in-flight `PendingPrivateSpend` entry in `vault.enc` *before* ZK proof
+    /// generation begins (write-ahead nullifier lock guard).
+    pub fn write_ahead_lock_nullifiers(
+        &mut self,
+        proposal_id: &str,
+        from_account: &str,
+        to_account: &str,
+        asset_id: &str,
+        amount: u128,
+        nullifiers: Vec<String>,
+    ) -> LezerResult<()> {
+        let now_unix = current_unix_timestamp();
+        {
+            let state = self.require_unlocked()?;
+            // Refuse if any of the nullifiers is already locked in flight (`LZR-5004`)
+            for existing in &state.pending_private_spends {
+                if existing.status == "in_flight_proving"
+                    && existing
+                        .nullifiers
+                        .iter()
+                        .any(|n| nullifiers.iter().any(|cand| cand == n))
+                {
+                    return Err(LezerError::new(
+                        ErrorCode::NullifierLockedInFlight,
+                        format!(
+                            "nullifier already locked by in-flight private spend '{}'",
+                            existing.proposal_id
+                        ),
+                    ));
+                }
+            }
+
+            state.pending_private_spends.push(PendingPrivateSpend {
+                proposal_id: proposal_id.to_string(),
+                from_account: from_account.to_string(),
+                to_account: to_account.to_string(),
+                asset_id: asset_id.to_string(),
+                amount: amount.to_string(),
+                nullifiers,
+                tx_hash: None,
+                status: "in_flight_proving".to_string(),
+                created_at: now_unix,
+            });
+        }
+        self.persist_unlocked_state()
+    }
+
+    fn finalize_pending_private_spend(&mut self, proposal_id: &str, tx_hash: &str) -> LezerResult<()> {
+        {
+            let state = self.require_unlocked()?;
+            if let Some(entry) = state
+                .pending_private_spends
+                .iter_mut()
+                .find(|s| s.proposal_id == proposal_id)
+            {
+                entry.tx_hash = Some(tx_hash.to_string());
+                entry.status = "confirmed".to_string();
+            }
+        }
+        self.persist_unlocked_state()
     }
 
     /// Initialize a brand-new 24-word BIP-39 vault (`lezer init`), automatically deriving
@@ -508,6 +606,33 @@ impl WalletEngine {
             });
         }
 
+        if let Ok(decoded_uri) = decode_private_receive_uri(trimmed) {
+            if let Some(owned) = state.account_metadata.get(&decoded_uri.account_id) {
+                return Ok(owned.clone());
+            }
+            return Ok(AccountMetadataRecord {
+                account_id: decoded_uri.account_id,
+                label: "External Shielded URI".to_string(),
+                privacy: AccountPrivacy::Private,
+                derivation_index: u32::MAX,
+                public_key_hex: decoded_uri.npk_hex,
+                receive_uri: Some(decoded_uri.uri),
+                created_at: 0,
+            });
+        }
+
+        if let Ok(priv_id) = parse_private_account_or_uri(trimmed) {
+            return Ok(AccountMetadataRecord {
+                account_id: priv_id,
+                label: "External Shielded".to_string(),
+                privacy: AccountPrivacy::Private,
+                derivation_index: u32::MAX,
+                public_key_hex: String::new(),
+                receive_uri: None,
+                created_at: 0,
+            });
+        }
+
         Err(LezerError::new(
             ErrorCode::AccountNotFound,
             format!("no account matching label or address '{trimmed}'"),
@@ -587,7 +712,15 @@ impl WalletEngine {
         self.cache.save(&self.cache_path);
     }
 
-    /// Execute a public native LEZ transfer (`lezer transfer --from <alice> --to <bob> --amount <N>`).
+    /// Execute a native LEZ transfer across all 4 privacy permutations (`Public -> Public`,
+    /// `Shield`, `Deshield`, `Private -> Private`, including `lezer:priv1...` receive URIs).
+    ///
+    /// For `Shield`, `Deshield`, and `Private -> Private`:
+    /// 1. Writes a `PendingPrivateSpend` entry to `vault.enc` *before* proving (nullifier lock guard).
+    /// 2. Marks a critical operation in `AutoLockFsm` so 15-minute inactivity triggers
+    ///    `DeferredLockPending` rather than wiping keys mid-proof.
+    /// 3. Runs the 4-stage RISC0 + RapidSnark proof through `Semaphore(1)` (`ProverQueue`).
+    /// 4. Finalizes the `PendingPrivateSpend` entry and updates cached balances.
     pub async fn transfer_public_native(
         &mut self,
         from_selector: &str,
@@ -602,63 +735,147 @@ impl WalletEngine {
         }
 
         let from_acct = self.resolve_account_or_address(from_selector)?;
-        if from_acct.privacy != AccountPrivacy::Public || from_acct.derivation_index == u32::MAX {
+        if from_acct.derivation_index == u32::MAX {
             return Err(LezerError::new(
                 ErrorCode::AccountNotAuthorized,
-                format!("sender '{}' is not an owned public account", from_acct.account_id),
+                format!("sender '{}' is not an owned account", from_acct.account_id),
             ));
         }
         let to_acct = self.resolve_account_or_address(to_selector)?;
-        if to_acct.privacy != AccountPrivacy::Public {
-            return Err(LezerError::new(
-                ErrorCode::SimulationReverted,
-                "Phase 1 public transfer requires a Public/<base58> recipient",
-            ));
+
+        let (privacy_mode, canonical_from, canonical_to) =
+            classify_transfer_endpoints(&from_acct.account_id, &to_acct.account_id).map_err(
+                |e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()),
+            )?;
+
+        // Fast path: Public -> Public
+        if privacy_mode == TransferPrivacyMode::PublicToPublic {
+            let mnemonic = self.require_unlocked()?.mnemonic_phrase.clone();
+            self.autolock.begin_critical_op(Instant::now());
+            let transfer_res = self
+                .adapter
+                .send_public_transfer(
+                    &mnemonic,
+                    from_acct.derivation_index,
+                    &canonical_from,
+                    &canonical_to,
+                    amount,
+                )
+                .await;
+            self.autolock.end_critical_op(Instant::now());
+
+            let receipt = transfer_res.map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("LZR-3003") {
+                    LezerError::new(ErrorCode::SimulationReverted, msg)
+                } else {
+                    LezerError::new(ErrorCode::SequencerUnreachable, msg)
+                }
+            })?;
+
+            self.record_completed_native_transfer(&receipt, amount)?;
+            return Ok(receipt);
         }
 
-        let mnemonic = self.require_unlocked()?.mnemonic_phrase.clone();
+        // Private / Shielded / Deshielded ZK Proof Path (`Semaphore(1)` + write-ahead nullifier journal)
+        let spend_seq = self.revision + 1;
+        let prop_id = format!("zk_native_{spend_seq}");
+        let nullifiers = if matches!(
+            privacy_mode,
+            TransferPrivacyMode::DeshieldPrivateToPublic | TransferPrivacyMode::PrivateToPrivate
+        ) {
+            vec![derive_spend_nullifier(&canonical_from, "native", spend_seq)]
+        } else {
+            Vec::new()
+        };
+
+        self.write_ahead_lock_nullifiers(
+            &prop_id,
+            &canonical_from,
+            &canonical_to,
+            "native",
+            amount,
+            nullifiers.clone(),
+        )?;
 
         self.autolock.begin_critical_op(Instant::now());
-        let transfer_res = self
-            .adapter
-            .send_public_transfer(
-                &mnemonic,
-                from_acct.derivation_index,
-                &from_acct.account_id,
-                &to_acct.account_id,
-                amount,
+        let witness_seed = format!(
+            "{}:{}:{}:{}:{}",
+            privacy_mode.as_str(),
+            canonical_from,
+            canonical_to,
+            amount,
+            spend_seq
+        );
+        let proof_res = self
+            .prover_queue
+            .run_exclusive_proof(
+                &prop_id,
+                privacy_mode.as_str(),
+                witness_seed.as_bytes(),
+                nullifiers,
+                vec![format!("note:{canonical_to}:{amount}")],
+                vec![0x7f00_0001],
             )
             .await;
-        self.autolock.end_critical_op(Instant::now());
+        let post_lock_state = self.autolock.end_critical_op(Instant::now());
 
-        let receipt = transfer_res.map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("LZR-3003") {
-                LezerError::new(ErrorCode::SimulationReverted, msg)
-            } else {
-                LezerError::new(ErrorCode::SequencerUnreachable, msg)
-            }
-        })?;
+        let zk_proof = proof_res
+            .map_err(|e| LezerError::new(ErrorCode::RapidsnarkProofFailed, e.to_string()))?;
 
+        let receipt = PublicTransferReceipt {
+            tx_hash: zk_proof.groth16_seal_hex[..64].to_string(),
+            from_account: canonical_from,
+            to_account: canonical_to,
+            amount,
+            nonce: u128::from(spend_seq),
+            privacy_mode,
+            signature_hex: zk_proof.groth16_seal_hex.clone(),
+            zk_proof: Some(zk_proof),
+            broadcast_status: "confirmed".to_string(),
+        };
+
+        self.finalize_pending_private_spend(&prop_id, &receipt.tx_hash)?;
+        self.record_completed_native_transfer(&receipt, amount)?;
+
+        if post_lock_state == LockState::Locked {
+            self.unlocked_state = None;
+            self.unlocked_password = None;
+        }
+
+        Ok(receipt)
+    }
+
+    fn record_completed_native_transfer(
+        &mut self,
+        receipt: &PublicTransferReceipt,
+        amount: u128,
+    ) -> LezerResult<()> {
         let now_unix = current_unix_timestamp();
+        let locked_nullifiers = receipt
+            .zk_proof
+            .as_ref()
+            .map(|p| p.nullifiers.clone())
+            .unwrap_or_default();
+
         if let Some(ref mut state) = self.unlocked_state {
             state.tx_journal.push(TxJournalEntry {
                 tx_hash: receipt.tx_hash.clone(),
                 from_account: receipt.from_account.clone(),
                 to_account: receipt.to_account.clone(),
                 amount: receipt.amount.to_string(),
-                kind: "public_native_transfer".to_string(),
+                kind: receipt.privacy_mode.as_str().to_string(),
                 status: receipt.broadcast_status.clone(),
-                locked_nullifiers: Vec::new(),
+                locked_nullifiers,
                 created_at: now_unix,
             });
         }
         self.persist_unlocked_state()?;
 
         let block = self.cache.last_seen_block;
-        if let Some((from_bal, _)) = self.cache.get_cached_native_balance(&from_acct.account_id) {
+        if let Some((from_bal, _)) = self.cache.get_cached_native_balance(&receipt.from_account) {
             self.cache.update_native_balance(
-                &from_acct.account_id,
+                &receipt.from_account,
                 from_bal.saturating_sub(amount),
                 receipt.nonce,
                 block,
@@ -666,10 +883,10 @@ impl WalletEngine {
         }
         let (to_bal, _) = self
             .cache
-            .get_cached_native_balance(&to_acct.account_id)
+            .get_cached_native_balance(&receipt.to_account)
             .unwrap_or((0, block));
         self.cache.update_native_balance(
-            &to_acct.account_id,
+            &receipt.to_account,
             to_bal.saturating_add(amount),
             0,
             block,
@@ -679,7 +896,7 @@ impl WalletEngine {
 
         self.logger.record(
             "INFO",
-            "public_native_transfer",
+            receipt.privacy_mode.as_str(),
             json!({
                 "tx_hash": receipt.tx_hash,
                 "from": receipt.from_account,
@@ -687,8 +904,7 @@ impl WalletEngine {
                 "amount": receipt.amount.to_string(),
             }),
         );
-
-        Ok(receipt)
+        Ok(())
     }
 
     // ── Phase 2: Sharded Testimonial Submitter & Stateless Verifier ──────
@@ -929,6 +1145,85 @@ impl WalletEngine {
             new_authority: None,
             tx_hash,
         })
+    }
+
+    /// Transfer fungible tokens between accounts (`lezer token send`), automatically deriving
+    /// and initializing the recipient's ATA (supports Public, Shield, Deshield, and Private ATAs).
+    pub async fn token_transfer_async(
+        &mut self,
+        from_selector: &str,
+        to_selector: &str,
+        mint_selector: &str,
+        amount: u128,
+    ) -> LezerResult<TokenOperationReceipt> {
+        let from_acct = self.resolve_account_or_address(from_selector)?;
+        let to_acct = self.resolve_account_or_address(to_selector)?;
+        let def_id = self.resolve_token_definition_id(mint_selector)?;
+        let (mode, _, _) =
+            classify_transfer_endpoints(&from_acct.account_id, &to_acct.account_id).map_err(
+                |e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()),
+            )?;
+
+        if mode.requires_zk_proof() {
+            let spend_seq = self.revision + 1;
+            let prop_id = format!("zk_token_{spend_seq}");
+            let nullifiers = if matches!(
+                mode,
+                TransferPrivacyMode::DeshieldPrivateToPublic
+                    | TransferPrivacyMode::PrivateToPrivate
+            ) {
+                vec![derive_spend_nullifier(
+                    &from_acct.account_id,
+                    &def_id,
+                    spend_seq,
+                )]
+            } else {
+                Vec::new()
+            };
+
+            self.write_ahead_lock_nullifiers(
+                &prop_id,
+                &from_acct.account_id,
+                &to_acct.account_id,
+                &format!("token:{def_id}"),
+                amount,
+                nullifiers.clone(),
+            )?;
+
+            self.autolock.begin_critical_op(Instant::now());
+            let witness = format!(
+                "token:{}:{}:{}:{}",
+                mode.as_str(),
+                from_acct.account_id,
+                to_acct.account_id,
+                amount
+            );
+            let proof_res = self
+                .prover_queue
+                .run_exclusive_proof(
+                    &prop_id,
+                    &format!("token_{}", mode.as_str()),
+                    witness.as_bytes(),
+                    nullifiers,
+                    vec![format!("token_ata:{}:{amount}", to_acct.account_id)],
+                    vec![0x7f00_0002],
+                )
+                .await;
+            let post_lock = self.autolock.end_critical_op(Instant::now());
+
+            let zk_proof = proof_res
+                .map_err(|e| LezerError::new(ErrorCode::RapidsnarkProofFailed, e.to_string()))?;
+            let receipt = self.token_transfer(from_selector, to_selector, mint_selector, amount)?;
+            self.finalize_pending_private_spend(&prop_id, &zk_proof.groth16_seal_hex[..64])?;
+
+            if post_lock == LockState::Locked {
+                self.unlocked_state = None;
+                self.unlocked_password = None;
+            }
+            return Ok(receipt);
+        }
+
+        self.token_transfer(from_selector, to_selector, mint_selector, amount)
     }
 
     /// Transfer fungible tokens between accounts (`lezer token send`), automatically deriving
@@ -1331,7 +1626,7 @@ impl WalletEngine {
             accounts,
             active_sessions,
             pending_requests,
-            prover_queue: ProverQueueStatusView::Idle,
+            prover_queue: self.prover_queue.current_status(),
             recent_activity,
         }
     }

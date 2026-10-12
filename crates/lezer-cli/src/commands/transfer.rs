@@ -1,9 +1,10 @@
-//! Native LEZ transfer CLI command (`lezer transfer --from <alice> --to <bob> --amount <N>`).
+//! Native LEZ transfer CLI command (`lezer transfer --from <alice> --to <bob>|--to-uri <lezer:priv1...> --amount <N>`).
 
 use lezer_core::{LezerResult, WalletEngine};
 use serde_json::Value;
 
-/// Execute `lezer transfer --from <from> --to <to> --amount <amount>`.
+/// Execute `lezer transfer` across all 4 privacy permutations (`Public -> Public`,
+/// `Shield`, `Deshield`, `Private -> Private`).
 pub async fn handle_transfer(
     engine: &mut WalletEngine,
     password: &str,

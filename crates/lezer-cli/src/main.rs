@@ -72,13 +72,13 @@ enum Commands {
         #[arg(long, default_value = "Main Public")]
         account: String,
     },
-    /// Execute a native LEZ transfer (`lezer transfer --from alice --to bob --amount 50`).
+    /// Execute a native LEZ transfer (`lezer transfer --from alice --to bob --amount 50` or `--to-uri lezer:priv1...`).
     Transfer {
-        /// Sender account label or `Public/<base58>` ID.
+        /// Sender account label, `Public/<base58>`, or `Private/<base58>` ID.
         #[arg(long)]
         from: String,
-        /// Recipient account label or `Public/<base58>` ID.
-        #[arg(long)]
+        /// Recipient account label, `Public/<base58>`, `Private/<base58>`, or `lezer:priv1...` URI.
+        #[arg(long, alias = "to-uri")]
         to: String,
         /// Amount of native LEZ to transfer.
         #[arg(long)]
