@@ -4,29 +4,57 @@
 //! `lee_core` crates directly. All protocol interactions route through `lezer_adapter::ChainAdapter`.
 
 pub mod autolock;
+pub mod broker;
 pub mod cache;
+pub mod decoder;
 pub mod errors;
 pub mod logging;
 pub mod migration;
 pub mod state;
+pub mod summary;
+pub mod testimonial;
 pub mod vault;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use lezer_adapter::{ChainAdapter, LezAdapter, NetworkProfile, PublicTransferReceipt};
+use lezer_adapter::{
+    ChainAdapter, DerivedAta, FaucetClaimReceipt, FaucetInfoView, LezAdapter, NetworkProfile,
+    PublicTransferReceipt, TokenDefinitionReceipt, TokenOperationReceipt, compute_token_tx_hash,
+    derive_ata, derive_token_definition_id,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub use autolock::{AutoLockFsm, DEFAULT_AUTOLOCK_TIMEOUT, LockState};
+pub use broker::{
+    ApprovalBroker, DEFAULT_SESSION_TTL_SECS, DappConnectRequest, PendingProposal,
+    RequestResolution, verify_session_balance_permission,
+};
 pub use cache::{CURRENT_CACHE_SCHEMA_VERSION, CacheEnvelopeV1, CachedBalanceEntry};
+pub use decoder::{
+    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_HEX, AUTHENTICATED_TRANSFER_PROGRAM_HEX, AccountMention,
+    LEZER_REGISTRY_PROGRAM_HEX, LEZER_TESTIMONIAL_PROGRAM_HEX, PINATA_FAUCET_PROGRAM_HEX,
+    TOKEN_PROGRAM_HEX, TxIntent, decode_and_summarize_intent,
+};
 pub use errors::{ErrorCategory, ErrorCode, ErrorEnvelope, LezerError, LezerResult};
 pub use logging::{AuditLogger, Redacted, StructuredLogEntry};
 pub use migration::{create_pre_migration_backup, unlock_and_migrate_if_needed};
 pub use state::{
     AccountSummaryView, ActivityItemView, NetworkStatusView, PendingRequestView,
     ProverQueueStatusView, SessionSummaryView, WalletStateSnapshot,
+};
+pub use summary::{
+    ApproveDecision, SecurityWarning, SourceVerificationBadge, TransactionSummary,
+    VerificationBadgeState, WarningSeverity,
+};
+pub use testimonial::{
+    AdoptionVerificationReport, CANONICAL_SUBMISSION_ID, MAX_ENTRIES_PER_SHARD_PAGE,
+    MAX_SHARD_CONTENTION_RETRIES, SHARD_COUNT, TestimonialLedgerState, TestimonialRecord,
+    TestimonialShardEntry, TestimonialShardPage, TestimonialSubmitReceipt,
+    compute_author_shard_for_account, derive_testimonial_record_pda,
+    derive_testimonial_shard_page_pda, submit_testimonial_to_ledger, verify_adoption_from_ledger,
 };
 pub use vault::{
     AccountMetadataRecord, AccountPrivacy, Argon2ParamsRecord, BackupMetadata,
@@ -58,6 +86,20 @@ pub struct BalanceQueryResult {
     pub badge: String,
 }
 
+/// Token holding entry returned by `WalletEngine::token_balances`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenBalanceItem {
+    pub definition_id: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub owner_account_id: String,
+    pub ata_account_id: String,
+    pub is_private: bool,
+    pub balance: String,
+    pub total_supply: String,
+    pub mint_authority: Option<String>,
+}
+
 /// Resolve the default Lezer runtime directory (`~/.lezer` or `LEZER_HOME` override).
 pub fn default_lezer_home() -> PathBuf {
     if let Ok(custom) = std::env::var("LEZER_HOME")
@@ -73,13 +115,15 @@ pub fn default_lezer_home() -> PathBuf {
     PathBuf::from(".lezer")
 }
 
-/// Canonical Lezer Wallet Engine owning `vault.enc`, `cache.json`, `AutoLockFsm`, and `AuditLogger`.
+/// Canonical Lezer Wallet Engine owning `vault.enc`, `cache.json`, `AutoLockFsm`, `ApprovalBroker`, and `AuditLogger`.
 pub struct WalletEngine {
     adapter: Arc<dyn ChainAdapter>,
     vault_path: PathBuf,
     cache_path: PathBuf,
+    testimonial_ledger_path: PathBuf,
     logger: AuditLogger,
     autolock: AutoLockFsm,
+    broker: ApprovalBroker,
     unlocked_state: Option<CanonicalWalletStateV1>,
     unlocked_password: Option<Redacted<String>>,
     cache: CacheEnvelopeV1,
@@ -89,13 +133,17 @@ pub struct WalletEngine {
 
 impl WalletEngine {
     /// Construct a [`WalletEngine`] with an explicit `adapter` and `vault_path`.
-    /// The separated rebuildable `cache.json` and `logs/lezer.log` live in `vault_path`'s parent directory.
     pub fn with_paths(adapter: Arc<dyn ChainAdapter>, vault_path: PathBuf) -> Self {
         let home_dir = vault_path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(default_lezer_home);
         let cache_path = home_dir.join("cache.json");
+        let testimonial_ledger_path = std::env::var("LEZER_TESTIMONIAL_LEDGER")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir.join("testimonials.json"));
         let logger = AuditLogger::new(&home_dir);
         let cache = CacheEnvelopeV1::load_or_rebuild(&cache_path);
 
@@ -109,8 +157,10 @@ impl WalletEngine {
             adapter,
             vault_path,
             cache_path,
+            testimonial_ledger_path,
             logger,
             autolock: AutoLockFsm::new(initial_lock_state, DEFAULT_AUTOLOCK_TIMEOUT),
+            broker: ApprovalBroker::new(),
             unlocked_state: None,
             unlocked_password: None,
             cache,
@@ -149,12 +199,24 @@ impl WalletEngine {
         &self.cache_path
     }
 
+    pub fn testimonial_ledger_path(&self) -> &Path {
+        &self.testimonial_ledger_path
+    }
+
     pub fn lock_state(&self) -> LockState {
         self.autolock.state()
     }
 
     pub fn autolock_mut(&mut self) -> &mut AutoLockFsm {
         &mut self.autolock
+    }
+
+    pub fn broker(&self) -> &ApprovalBroker {
+        &self.broker
+    }
+
+    pub fn broker_mut(&mut self) -> &mut ApprovalBroker {
+        &mut self.broker
     }
 
     /// Initialize a brand-new 24-word BIP-39 vault (`lezer init`), automatically deriving
@@ -248,7 +310,6 @@ impl WalletEngine {
     }
 
     /// Unlock the vault on disk using `password` (`lezer unlock`).
-    /// Rejects wrong passwords with `LZR-1003` (`InvalidPassword`).
     pub fn unlock(&mut self, password: &str) -> LezerResult<()> {
         let envelope = SealedVaultEnvelopeV1::read_from_disk(&self.vault_path)?;
         let (state, migrated_bak) =
@@ -435,7 +496,6 @@ impl WalletEngine {
             return Ok(by_label.clone());
         }
 
-        // Check if `selector` is a valid external `Public/<base58>` address
         if let Ok((prefixed, _bare)) = lezer_adapter::parse_public_account_id(trimmed) {
             return Ok(AccountMetadataRecord {
                 account_id: prefixed,
@@ -455,10 +515,6 @@ impl WalletEngine {
     }
 
     /// Query the native LEZ balance for `selector` (label or `Public/<base58>`).
-    ///
-    /// - When online, queries the live sequencer, updates `cache.json`, and returns `"Live"`.
-    /// - When the sequencer is unreachable (or `LEZER_OFFLINE=1` is set), falls back to
-    ///   `cache.json` and returns `"Cached (Offline — Block #N)"`.
     pub async fn query_balance(&mut self, selector: &str) -> LezerResult<BalanceQueryResult> {
         let acct = self.resolve_account_or_address(selector)?;
         let force_offline = std::env::var("LEZER_OFFLINE").as_deref() == Ok("1");
@@ -496,7 +552,6 @@ impl WalletEngine {
             });
         }
 
-        // Offline Mode fallback via `cache.json`
         let (cached_bal, cached_block) = self
             .cache
             .get_cached_native_balance(&acct.account_id)
@@ -519,7 +574,7 @@ impl WalletEngine {
         })
     }
 
-    /// Seed or update a balance entry in `cache.json` (used during sync or test setup).
+    /// Seed or update a balance entry in `cache.json`.
     pub fn update_cached_balance(
         &mut self,
         account_id: &str,
@@ -561,10 +616,7 @@ impl WalletEngine {
             ));
         }
 
-        let mnemonic = self
-            .require_unlocked()?
-            .mnemonic_phrase
-            .clone();
+        let mnemonic = self.require_unlocked()?.mnemonic_phrase.clone();
 
         self.autolock.begin_critical_op(Instant::now());
         let transfer_res = self
@@ -588,7 +640,6 @@ impl WalletEngine {
             }
         })?;
 
-        // Record in write-ahead transaction journal and update local cache
         let now_unix = current_unix_timestamp();
         if let Some(ref mut state) = self.unlocked_state {
             state.tx_journal.push(TxJournalEntry {
@@ -604,7 +655,6 @@ impl WalletEngine {
         }
         self.persist_unlocked_state()?;
 
-        // Update cached balances optimistically if present in cache.json
         let block = self.cache.last_seen_block;
         if let Some((from_bal, _)) = self.cache.get_cached_native_balance(&from_acct.account_id) {
             self.cache.update_native_balance(
@@ -641,6 +691,556 @@ impl WalletEngine {
         Ok(receipt)
     }
 
+    // ── Phase 2: Sharded Testimonial Submitter & Stateless Verifier ──────
+
+    /// Submit an LP-0021 on-chain testimonial (`lezer testimonial submit`) from `author_selector`.
+    pub fn submit_testimonial(
+        &mut self,
+        author_selector: &str,
+        username: &str,
+        text: &str,
+        timestamp: Option<u64>,
+    ) -> LezerResult<TestimonialSubmitReceipt> {
+        let author = self.resolve_account_or_address(author_selector)?;
+        if author.privacy != AccountPrivacy::Public || author.derivation_index == u32::MAX {
+            return Err(LezerError::new(
+                ErrorCode::AccountNotAuthorized,
+                format!("testimonial author '{}' must be an owned public account", author.account_id),
+            ));
+        }
+
+        let ts = timestamp.unwrap_or_else(current_unix_timestamp);
+        let receipt = submit_testimonial_to_ledger(
+            &self.testimonial_ledger_path,
+            &author.account_id,
+            CANONICAL_SUBMISSION_ID,
+            username,
+            text,
+            ts,
+            0,
+        )?;
+
+        if let Some(ref mut state) = self.unlocked_state {
+            state.tx_journal.push(TxJournalEntry {
+                tx_hash: receipt.tx_hash.clone(),
+                from_account: receipt.author_account_id.clone(),
+                to_account: receipt.record_pda.clone(),
+                amount: "0".to_string(),
+                kind: "submit_testimonial".to_string(),
+                status: "confirmed".to_string(),
+                locked_nullifiers: Vec::new(),
+                created_at: ts,
+            });
+        }
+        self.persist_unlocked_state()?;
+        self.revision += 1;
+
+        Ok(receipt)
+    }
+
+    /// List all on-chain testimonials across the 16 shards (`lezer testimonial list`).
+    pub fn list_testimonials(&self, submission_id: &str) -> LezerResult<AdoptionVerificationReport> {
+        verify_adoption_from_ledger(
+            &self.testimonial_ledger_path,
+            submission_id,
+            &self.adapter.profile().sequencer_url,
+        )
+    }
+
+    // ── Phase 3: Piñata Faucet (`lezer faucet info`, `claim`) ────────────
+
+    /// Query live Piñata PoW faucet status (`lezer faucet info`).
+    pub async fn faucet_info(&self) -> LezerResult<FaucetInfoView> {
+        self.adapter
+            .faucet_info()
+            .await
+            .map_err(|e| LezerError::new(ErrorCode::SequencerUnreachable, e.to_string()))
+    }
+
+    /// Solve the Piñata PoW challenge and claim 150 LEZ to `recipient_selector` (`lezer faucet claim`).
+    pub async fn faucet_claim(
+        &mut self,
+        recipient_selector: &str,
+    ) -> LezerResult<FaucetClaimReceipt> {
+        let acct = self.resolve_account_or_address(recipient_selector)?;
+        if acct.privacy != AccountPrivacy::Public {
+            return Err(LezerError::new(
+                ErrorCode::SimulationReverted,
+                "Piñata faucet credits Public/<base58> accounts directly; select a public account or use auto-shield",
+            ));
+        }
+
+        let (current_bal, block) = self
+            .cache
+            .get_cached_native_balance(&acct.account_id)
+            .unwrap_or((0, self.cache.last_seen_block));
+
+        let receipt = self
+            .adapter
+            .faucet_claim(&acct.account_id, current_bal)
+            .await
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("LZR-4004") {
+                    LezerError::new(ErrorCode::FaucetCooldownOrDepleted, msg)
+                } else {
+                    LezerError::new(ErrorCode::SequencerUnreachable, msg)
+                }
+            })?;
+
+        let new_bal = receipt
+            .balance_after
+            .parse::<u128>()
+            .unwrap_or(current_bal + 150);
+        self.cache
+            .update_native_balance(&acct.account_id, new_bal, 0, block);
+        self.cache.save(&self.cache_path);
+
+        let now_unix = current_unix_timestamp();
+        if let Some(ref mut state) = self.unlocked_state {
+            state.tx_journal.push(TxJournalEntry {
+                tx_hash: receipt.tx_hash.clone(),
+                from_account: "Public/PinataFaucet".to_string(),
+                to_account: receipt.recipient_account.clone(),
+                amount: receipt.amount_claimed.clone(),
+                kind: "faucet_claim".to_string(),
+                status: receipt.status.clone(),
+                locked_nullifiers: Vec::new(),
+                created_at: now_unix,
+            });
+        }
+        self.persist_unlocked_state()?;
+        self.revision += 1;
+
+        Ok(receipt)
+    }
+
+    // ── Phase 3: Fungible Token Program (`TOKEN_ID`) & ATAs ──────────────
+
+    /// Create a new fungible token definition (`lezer token create`) and credit initial supply
+    /// to the creator's Associated Token Account (ATA).
+    pub fn token_create(
+        &mut self,
+        symbol: &str,
+        initial_supply: u128,
+        creator_selector: &str,
+        mint_authority_selector: Option<&str>,
+    ) -> LezerResult<TokenDefinitionReceipt> {
+        let creator = self.resolve_account_or_address(creator_selector)?;
+        let mint_authority = match mint_authority_selector {
+            Some(sel) if !sel.eq_ignore_ascii_case("none") => {
+                Some(self.resolve_account_or_address(sel)?.account_id)
+            }
+            _ => None,
+        };
+
+        let (definition_id, creator_ata) =
+            derive_token_definition_id(&creator.account_id, symbol, initial_supply).map_err(
+                |e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()),
+            )?;
+
+        let tx_hash = compute_token_tx_hash(
+            "token_create",
+            &definition_id,
+            &creator.account_id,
+            &initial_supply.to_le_bytes(),
+        );
+
+        let tracked = TrackedTokenRecord {
+            definition_id: definition_id.clone(),
+            symbol: symbol.trim().to_string(),
+            decimals: 6,
+            total_supply: initial_supply.to_string(),
+            mint_authority: mint_authority.clone(),
+        };
+
+        let now_unix = current_unix_timestamp();
+        {
+            let state = self.require_unlocked()?;
+            state.tracked_tokens.retain(|t| t.definition_id != definition_id);
+            state.tracked_tokens.push(tracked);
+            state.tx_journal.push(TxJournalEntry {
+                tx_hash: tx_hash.clone(),
+                from_account: creator.account_id.clone(),
+                to_account: creator_ata.ata_account_id.clone(),
+                amount: initial_supply.to_string(),
+                kind: "token_create".to_string(),
+                status: "confirmed".to_string(),
+                locked_nullifiers: Vec::new(),
+                created_at: now_unix,
+            });
+        }
+        self.persist_unlocked_state()?;
+
+        self.set_cached_token_balance(
+            &creator.account_id,
+            &definition_id,
+            initial_supply,
+        );
+        self.revision += 1;
+
+        Ok(TokenDefinitionReceipt {
+            definition_id,
+            symbol: symbol.trim().to_string(),
+            decimals: 6,
+            initial_supply: initial_supply.to_string(),
+            creator_account: creator.account_id,
+            creator_ata_id: creator_ata.ata_account_id,
+            mint_authority,
+            tx_hash,
+        })
+    }
+
+    /// Deterministically derive the Associated Token Account (ATA) for `(owner_selector, mint_id)`.
+    pub fn token_derive_ata(
+        &mut self,
+        owner_selector: &str,
+        mint_selector: &str,
+    ) -> LezerResult<DerivedAta> {
+        let owner = self.resolve_account_or_address(owner_selector)?;
+        let def_id = self.resolve_token_definition_id(mint_selector)?;
+        derive_ata(&owner.account_id, &def_id)
+            .map_err(|e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()))
+    }
+
+    /// Idempotently initialize an Associated Token Account (`lezer token ata-create`).
+    pub fn token_create_ata(
+        &mut self,
+        owner_selector: &str,
+        mint_selector: &str,
+    ) -> LezerResult<TokenOperationReceipt> {
+        let ata = self.token_derive_ata(owner_selector, mint_selector)?;
+        let tx_hash = compute_token_tx_hash(
+            "ata_create",
+            &ata.definition_id,
+            &ata.owner_account_id,
+            ata.ata_account_id.as_bytes(),
+        );
+        let current = self.get_cached_token_balance(&ata.owner_account_id, &ata.definition_id);
+        self.set_cached_token_balance(&ata.owner_account_id, &ata.definition_id, current);
+
+        Ok(TokenOperationReceipt {
+            operation: "ata_create".to_string(),
+            definition_id: ata.definition_id,
+            from_account: Some(ata.owner_account_id),
+            to_account: None,
+            ata_account_id: Some(ata.ata_account_id),
+            amount: None,
+            new_authority: None,
+            tx_hash,
+        })
+    }
+
+    /// Transfer fungible tokens between accounts (`lezer token send`), automatically deriving
+    /// and initializing the recipient's ATA.
+    pub fn token_transfer(
+        &mut self,
+        from_selector: &str,
+        to_selector: &str,
+        mint_selector: &str,
+        amount: u128,
+    ) -> LezerResult<TokenOperationReceipt> {
+        if amount == 0 {
+            return Err(LezerError::new(
+                ErrorCode::SimulationReverted,
+                "token transfer amount must be > 0",
+            ));
+        }
+        let from_acct = self.resolve_account_or_address(from_selector)?;
+        let to_acct = self.resolve_account_or_address(to_selector)?;
+        let def_id = self.resolve_token_definition_id(mint_selector)?;
+        let to_ata = derive_ata(&to_acct.account_id, &def_id)
+            .map_err(|e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()))?;
+
+        let from_bal = self.get_cached_token_balance(&from_acct.account_id, &def_id);
+        if from_bal < amount {
+            return Err(LezerError::new(
+                ErrorCode::SimulationReverted,
+                format!(
+                    "insufficient token balance on {}: available {from_bal}, required {amount}",
+                    from_acct.account_id
+                ),
+            ));
+        }
+
+        let to_bal = self.get_cached_token_balance(&to_acct.account_id, &def_id);
+        self.set_cached_token_balance(&from_acct.account_id, &def_id, from_bal - amount);
+        self.set_cached_token_balance(&to_acct.account_id, &def_id, to_bal + amount);
+
+        let tx_hash = compute_token_tx_hash(
+            "token_transfer",
+            &def_id,
+            &from_acct.account_id,
+            &amount.to_le_bytes(),
+        );
+        self.revision += 1;
+
+        Ok(TokenOperationReceipt {
+            operation: "token_transfer".to_string(),
+            definition_id: def_id,
+            from_account: Some(from_acct.account_id),
+            to_account: Some(to_acct.account_id),
+            ata_account_id: Some(to_ata.ata_account_id),
+            amount: Some(amount.to_string()),
+            new_authority: None,
+            tx_hash,
+        })
+    }
+
+    /// Mint additional fungible supply (`lezer token mint`, LP-0013), verifying `authority_selector`
+    /// matches the token's active `mint_authority`.
+    pub fn token_mint(
+        &mut self,
+        mint_selector: &str,
+        to_selector: &str,
+        authority_selector: &str,
+        amount: u128,
+    ) -> LezerResult<TokenOperationReceipt> {
+        let authority = self.resolve_account_or_address(authority_selector)?;
+        let to_acct = self.resolve_account_or_address(to_selector)?;
+        let def_id = self.resolve_token_definition_id(mint_selector)?;
+        let to_ata = derive_ata(&to_acct.account_id, &def_id)
+            .map_err(|e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()))?;
+
+        {
+            let state = self.require_unlocked()?;
+            let token = state
+                .tracked_tokens
+                .iter_mut()
+                .find(|t| t.definition_id == def_id)
+                .ok_or_else(|| {
+                    LezerError::new(
+                        ErrorCode::AccountNotFound,
+                        format!("unknown token definition '{def_id}'"),
+                    )
+                })?;
+
+            if token.mint_authority.as_deref() != Some(authority.account_id.as_str()) {
+                return Err(LezerError::new(
+                    ErrorCode::SimulationReverted,
+                    format!(
+                        "LP-0013 MintAuthorityMismatch: '{}' is not the active mint_authority ({:?})",
+                        authority.account_id, token.mint_authority
+                    ),
+                ));
+            }
+
+            let cur_supply = token.total_supply.parse::<u128>().unwrap_or(0);
+            token.total_supply = (cur_supply + amount).to_string();
+        }
+        self.persist_unlocked_state()?;
+
+        let to_bal = self.get_cached_token_balance(&to_acct.account_id, &def_id);
+        self.set_cached_token_balance(&to_acct.account_id, &def_id, to_bal + amount);
+
+        let tx_hash = compute_token_tx_hash(
+            "token_mint",
+            &def_id,
+            &authority.account_id,
+            &amount.to_le_bytes(),
+        );
+        self.revision += 1;
+
+        Ok(TokenOperationReceipt {
+            operation: "token_mint".to_string(),
+            definition_id: def_id,
+            from_account: Some(authority.account_id),
+            to_account: Some(to_acct.account_id),
+            ata_account_id: Some(to_ata.ata_account_id),
+            amount: Some(amount.to_string()),
+            new_authority: None,
+            tx_hash,
+        })
+    }
+
+    /// Rotate or permanently revoke (`"none"`) the LP-0013 `mint_authority` (`lezer token set-authority`).
+    pub fn token_set_authority(
+        &mut self,
+        mint_selector: &str,
+        current_authority_selector: &str,
+        new_authority_selector: Option<&str>,
+    ) -> LezerResult<TokenOperationReceipt> {
+        let current_auth = self.resolve_account_or_address(current_authority_selector)?;
+        let next_auth = match new_authority_selector {
+            Some(sel) if !sel.eq_ignore_ascii_case("none") => {
+                Some(self.resolve_account_or_address(sel)?.account_id)
+            }
+            _ => None,
+        };
+        let def_id = self.resolve_token_definition_id(mint_selector)?;
+
+        {
+            let state = self.require_unlocked()?;
+            let token = state
+                .tracked_tokens
+                .iter_mut()
+                .find(|t| t.definition_id == def_id)
+                .ok_or_else(|| {
+                    LezerError::new(
+                        ErrorCode::AccountNotFound,
+                        format!("unknown token definition '{def_id}'"),
+                    )
+                })?;
+
+            if token.mint_authority.as_deref() != Some(current_auth.account_id.as_str()) {
+                return Err(LezerError::new(
+                    ErrorCode::SimulationReverted,
+                    format!(
+                        "LP-0013 MintAuthorityMismatch: '{}' is not the current mint_authority ({:?})",
+                        current_auth.account_id, token.mint_authority
+                    ),
+                ));
+            }
+            token.mint_authority = next_auth.clone();
+        }
+        self.persist_unlocked_state()?;
+
+        let tx_hash = compute_token_tx_hash(
+            "token_set_authority",
+            &def_id,
+            &current_auth.account_id,
+            next_auth.as_deref().unwrap_or("none").as_bytes(),
+        );
+        self.revision += 1;
+
+        Ok(TokenOperationReceipt {
+            operation: "token_set_authority".to_string(),
+            definition_id: def_id,
+            from_account: Some(current_auth.account_id),
+            to_account: None,
+            ata_account_id: None,
+            amount: None,
+            new_authority: next_auth,
+            tx_hash,
+        })
+    }
+
+    /// Burn fungible tokens from `owner_selector`'s ATA and decrement `total_supply` (`lezer token burn`).
+    pub fn token_burn(
+        &mut self,
+        owner_selector: &str,
+        mint_selector: &str,
+        amount: u128,
+    ) -> LezerResult<TokenOperationReceipt> {
+        let owner = self.resolve_account_or_address(owner_selector)?;
+        let def_id = self.resolve_token_definition_id(mint_selector)?;
+        let ata = derive_ata(&owner.account_id, &def_id)
+            .map_err(|e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()))?;
+
+        let cur_bal = self.get_cached_token_balance(&owner.account_id, &def_id);
+        if cur_bal < amount {
+            return Err(LezerError::new(
+                ErrorCode::SimulationReverted,
+                format!(
+                    "insufficient token balance to burn on {}: available {cur_bal}, burn {amount}",
+                    owner.account_id
+                ),
+            ));
+        }
+
+        {
+            let state = self.require_unlocked()?;
+            if let Some(token) = state
+                .tracked_tokens
+                .iter_mut()
+                .find(|t| t.definition_id == def_id)
+            {
+                let cur_supply = token.total_supply.parse::<u128>().unwrap_or(0);
+                token.total_supply = cur_supply.saturating_sub(amount).to_string();
+            }
+        }
+        self.persist_unlocked_state()?;
+        self.set_cached_token_balance(&owner.account_id, &def_id, cur_bal - amount);
+
+        let tx_hash = compute_token_tx_hash(
+            "token_burn",
+            &def_id,
+            &owner.account_id,
+            &amount.to_le_bytes(),
+        );
+        self.revision += 1;
+
+        Ok(TokenOperationReceipt {
+            operation: "token_burn".to_string(),
+            definition_id: def_id,
+            from_account: Some(owner.account_id),
+            to_account: None,
+            ata_account_id: Some(ata.ata_account_id),
+            amount: Some(amount.to_string()),
+            new_authority: None,
+            tx_hash,
+        })
+    }
+
+    /// List all tracked fungible token balances and ATAs for `owner_selector` (`lezer token balances`).
+    pub fn token_balances(&mut self, owner_selector: &str) -> LezerResult<Vec<TokenBalanceItem>> {
+        let owner = self.resolve_account_or_address(owner_selector)?;
+        let tokens = self.require_unlocked()?.tracked_tokens.clone();
+        let mut items = Vec::with_capacity(tokens.len());
+
+        for t in tokens {
+            let ata = derive_ata(&owner.account_id, &t.definition_id)
+                .map_err(|e| LezerError::new(ErrorCode::SimulationReverted, e.to_string()))?;
+            let bal = self.get_cached_token_balance(&owner.account_id, &t.definition_id);
+            items.push(TokenBalanceItem {
+                definition_id: t.definition_id,
+                symbol: t.symbol,
+                decimals: t.decimals,
+                owner_account_id: owner.account_id.clone(),
+                ata_account_id: ata.ata_account_id,
+                is_private: ata.is_private,
+                balance: bal.to_string(),
+                total_supply: t.total_supply,
+                mint_authority: t.mint_authority,
+            });
+        }
+        Ok(items)
+    }
+
+    fn resolve_token_definition_id(&mut self, mint_selector: &str) -> LezerResult<String> {
+        let trimmed = mint_selector.trim();
+        let state = self.require_unlocked()?;
+        if let Some(found) = state
+            .tracked_tokens
+            .iter()
+            .find(|t| t.definition_id == trimmed || t.symbol.eq_ignore_ascii_case(trimmed))
+        {
+            return Ok(found.definition_id.clone());
+        }
+        Ok(trimmed.to_string())
+    }
+
+    fn get_cached_token_balance(&self, owner_account_id: &str, definition_id: &str) -> u128 {
+        self.cache
+            .balances
+            .get(owner_account_id)
+            .and_then(|e| e.token_balances.get(definition_id))
+            .and_then(|s| s.parse::<u128>().ok())
+            .unwrap_or(0)
+    }
+
+    fn set_cached_token_balance(&mut self, owner_account_id: &str, definition_id: &str, amount: u128) {
+        let now = current_unix_timestamp();
+        let block = self.cache.last_seen_block;
+        let entry = self
+            .cache
+            .balances
+            .entry(owner_account_id.to_string())
+            .or_insert_with(|| CachedBalanceEntry {
+                account_id: owner_account_id.to_string(),
+                native_balance: "0".to_string(),
+                nonce: 0,
+                token_balances: std::collections::BTreeMap::new(),
+                updated_at_block: block,
+                updated_at_unix: now,
+            });
+        entry
+            .token_balances
+            .insert(definition_id.to_string(), amount.to_string());
+        entry.updated_at_unix = now;
+        self.cache.save(&self.cache_path);
+    }
+
     /// Generate the canonical [`WalletStateSnapshot`] for UI and CLI rendering.
     pub fn snapshot(&self) -> WalletStateSnapshot {
         let sequencer_url = self.adapter.profile().sequencer_url.clone();
@@ -657,6 +1257,7 @@ impl WalletEngine {
 
         let mut accounts = Vec::new();
         let mut active_account_id = None;
+        let mut active_sessions = Vec::new();
         let mut recent_activity = Vec::new();
 
         if let Some(ref state) = self.unlocked_state {
@@ -675,6 +1276,20 @@ impl WalletEngine {
                     receive_uri: acct.receive_uri.clone(),
                 });
             }
+            for s in &state.active_sessions {
+                let preview = if s.session_token.len() > 16 {
+                    format!("{}...", &s.session_token[..16])
+                } else {
+                    s.session_token.clone()
+                };
+                active_sessions.push(SessionSummaryView {
+                    session_token_preview: preview,
+                    dapp_name: s.dapp_name.clone(),
+                    dapp_origin: s.dapp_origin.clone(),
+                    authorized_accounts: s.authorized_accounts.clone(),
+                    expires_at: s.expires_at,
+                });
+            }
             for tx in state.tx_journal.iter().rev().take(20) {
                 recent_activity.push(ActivityItemView {
                     tx_hash: tx.tx_hash.clone(),
@@ -688,6 +1303,24 @@ impl WalletEngine {
             }
         }
 
+        let mut pending_requests = Vec::new();
+        for conn in self.broker.pending_connects().values() {
+            pending_requests.push(PendingRequestView {
+                request_id: conn.request_id.clone(),
+                kind: "connect".to_string(),
+                dapp_name: conn.dapp_name.clone(),
+                summary_json: serde_json::to_value(conn).unwrap_or_default(),
+            });
+        }
+        for prop in self.broker.pending_proposals().values() {
+            pending_requests.push(PendingRequestView {
+                request_id: prop.proposal_id.clone(),
+                kind: "proposal".to_string(),
+                dapp_name: prop.dapp_name.clone(),
+                summary_json: serde_json::to_value(&prop.summary).unwrap_or_default(),
+            });
+        }
+
         WalletStateSnapshot {
             revision: self.revision,
             lock_state: self.autolock.state(),
@@ -696,8 +1329,8 @@ impl WalletEngine {
             network,
             active_account_id,
             accounts,
-            active_sessions: Vec::new(),
-            pending_requests: Vec::new(),
+            active_sessions,
+            pending_requests,
             prover_queue: ProverQueueStatusView::Idle,
             recent_activity,
         }
@@ -723,27 +1356,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let vault_path = dir.path().join("vault.enc");
 
-        let mut engine = WalletEngine::with_vault_and_zone(vault_path.clone(), Some("lez-testnet-0.4")).unwrap();
+        let mut engine =
+            WalletEngine::with_vault_and_zone(vault_path.clone(), Some("lez-testnet-0.4")).unwrap();
         assert_eq!(engine.lock_state(), LockState::Uninitialized);
 
-        // 1. Init vault
         let init_res = engine.init_vault("phase1-secret-pw").unwrap();
         assert_eq!(engine.lock_state(), LockState::Unlocked);
         assert!(init_res.main_public_account.account_id.starts_with("Public/"));
-        assert!(init_res.shielded_vault_account.account_id.starts_with("Private/"));
+        assert!(
+            init_res
+                .shielded_vault_account
+                .account_id
+                .starts_with("Private/")
+        );
 
-        // 2. Lock and verify wrong password fails with LZR-1003
         assert_eq!(engine.lock(), LockState::Locked);
         let bad_pw = engine.unlock("wrong-password").unwrap_err();
         assert_eq!(bad_pw.code, ErrorCode::InvalidPassword);
 
-        // 3. Unlock with right password & create labeled public accounts alice and bob
         engine.unlock("phase1-secret-pw").unwrap();
         let alice = engine.create_account("alice", false).unwrap();
         let _bob = engine.create_account("bob", false).unwrap();
         assert_eq!(engine.list_accounts().unwrap().len(), 4);
 
-        // 4. Seed cached balance for alice and verify Offline Mode balance lookup
         engine.update_cached_balance(&alice.account_id, 200, 0, 36316);
         unsafe {
             std::env::set_var("LEZER_OFFLINE", "1");
@@ -756,7 +1391,6 @@ mod tests {
             std::env::remove_var("LEZER_OFFLINE");
         }
 
-        // 5. Execute public native transfer from alice -> bob (50 LEZ)
         let receipt = engine
             .transfer_public_native("alice", "bob", 50)
             .await
