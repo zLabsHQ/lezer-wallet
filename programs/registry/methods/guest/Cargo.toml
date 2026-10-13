@@ -1,0 +1,13 @@
+[package]
+name = "lezer_registry_guest"
+version = "1.0.0"
+edition = "2024"
+
+[[bin]]
+name = "registry"
+path = "src/bin/registry.rs"
+
+[dependencies]
+registry_core = { path = "../../registry_core" }
+borsh = { version = "1", features = ["derive"] }
+sha2 = "0.10"
