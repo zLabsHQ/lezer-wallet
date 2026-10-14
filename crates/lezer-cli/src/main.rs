@@ -12,8 +12,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use commands::account::AccountSubcommand;
 use commands::faucet::FaucetSubcommand;
+use commands::registry::RegistrySubcommand;
 use commands::testimonial::TestimonialSubcommand;
 use commands::token::TokenSubcommand;
+use commands::vault::BackupSubcommand;
 use lezer_adapter::LezAdapter;
 use lezer_core::{CANONICAL_SUBMISSION_ID, LezerError, WalletEngine, default_lezer_home};
 use serde_json::{Value, json};
@@ -98,6 +100,16 @@ enum Commands {
     Testimonial {
         #[command(subcommand)]
         sub: TestimonialSubcommand,
+    },
+    /// LP-0023 Program Registry commands (`lookup`, `list`, `search`, `register`, `verify`).
+    Registry {
+        #[command(subcommand)]
+        sub: RegistrySubcommand,
+    },
+    /// Client-side encrypted `SealedVaultEnvelopeV1` backup on Logos Storage (`push`, `pull`).
+    Backup {
+        #[command(subcommand)]
+        sub: BackupSubcommand,
     },
     /// Stateless 16-shard evaluator adoption verifier (`lezer verify-adoption --submission-id lp0021-lezer`).
     VerifyAdoption {
@@ -221,6 +233,22 @@ fn main() {
             }
             Commands::Testimonial { sub } => {
                 commands::testimonial::handle_testimonial_subcommand(&mut engine, &password, sub)
+            }
+            Commands::Registry { sub } => {
+                let reg_path = engine
+                    .vault_path()
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("registry.json");
+                commands::registry::handle_registry_subcommand(&reg_path, sub)
+            }
+            Commands::Backup { sub } => {
+                let mirror_path = engine
+                    .vault_path()
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("storage_mirror.json");
+                commands::vault::handle_backup_subcommand(engine.vault_path(), &mirror_path, sub)
             }
             Commands::VerifyAdoption {
                 submission_id,
