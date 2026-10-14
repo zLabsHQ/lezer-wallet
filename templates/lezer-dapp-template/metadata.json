@@ -1,0 +1,27 @@
+{
+  "name": "lezer_dapp_starter",
+  "display_name": "Lezer dApp Starter",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "interface": "universal",
+  "category": "dapp",
+  "description": "Forkable 5-minute Logos Basecamp ui_qml starter connected to lezer_wallet_provider",
+  "author": "Ecosystem Builder",
+  "icon": "src/icons/icon.png",
+  "view": "qml/MainView.qml",
+  "dependencies": ["lezer_wallet_provider"],
+  "codegen": {},
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": ["qt6.qtdeclarative", "qt6.qtwebview"]
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
