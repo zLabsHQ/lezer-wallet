@@ -2,6 +2,7 @@
 
 pub mod account;
 pub mod faucet;
+pub mod registry;
 pub mod testimonial;
 pub mod token;
 pub mod transfer;

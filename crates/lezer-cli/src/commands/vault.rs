@@ -1,7 +1,46 @@
 //! Vault lifecycle CLI commands (`lezer init`, `restore`, `unlock`, `lock`, `status`).
 
-use lezer_core::{LezerResult, WalletEngine};
+use std::path::Path;
+
+use clap::Subcommand;
+use lezer_core::{
+    LezerResult, WalletEngine, pull_encrypted_vault_backup, push_encrypted_vault_backup,
+};
 use serde_json::{Value, json};
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum BackupSubcommand {
+    /// Upload the client-side encrypted `SealedVaultEnvelopeV1` (`vault.enc`) to Logos Storage (`Codex`).
+    Push {
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        node: String,
+    },
+    /// Download an encrypted `SealedVaultEnvelopeV1` by CID from Logos Storage (`Codex`).
+    Pull {
+        #[arg(long)]
+        cid: String,
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        node: String,
+    },
+}
+
+pub fn handle_backup_subcommand(
+    vault_path: &Path,
+    mirror_path: &Path,
+    sub: BackupSubcommand,
+) -> LezerResult<Value> {
+    match sub {
+        BackupSubcommand::Push { node } => {
+            let receipt =
+                push_encrypted_vault_backup(vault_path, mirror_path, &node, 1_760_000_600)?;
+            Ok(serde_json::to_value(receipt).unwrap())
+        }
+        BackupSubcommand::Pull { cid, node } => {
+            let receipt = pull_encrypted_vault_backup(mirror_path, &cid, &node, vault_path)?;
+            Ok(serde_json::to_value(receipt).unwrap())
+        }
+    }
+}
 
 /// Execute `lezer init` — creates a new 24-word BIP-39 mnemonic vault (`vault.enc`).
 pub fn handle_init(engine: &mut WalletEngine, password: &str) -> LezerResult<Value> {
