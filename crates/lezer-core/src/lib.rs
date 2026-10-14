@@ -11,7 +11,9 @@ pub mod decoder;
 pub mod errors;
 pub mod logging;
 pub mod migration;
+pub mod registry;
 pub mod state;
+pub mod storage;
 pub mod summary;
 pub mod testimonial;
 pub mod vault;
@@ -44,9 +46,18 @@ pub use decoder::{
 pub use errors::{ErrorCategory, ErrorCode, ErrorEnvelope, LezerError, LezerResult};
 pub use logging::{AuditLogger, Redacted, StructuredLogEntry};
 pub use migration::{create_pre_migration_backup, unlock_and_migrate_if_needed};
+pub use registry::{
+    ProgramVerificationReport, RegistryEntryView, RegistryLedgerState, compute_registry_shard_key,
+    derive_deployer_entry_pda, list_registered_programs, lookup_program_entry,
+    register_program_entry, search_registered_programs, verify_program_bytecode,
+};
 pub use state::{
     AccountSummaryView, ActivityItemView, NetworkStatusView, PendingRequestView,
     ProverQueueStatusView, SessionSummaryView, WalletStateSnapshot,
+};
+pub use storage::{
+    CODEX_CID_PREFIX, StorageDownloadReceipt, StorageUploadReceipt, compute_codex_cid,
+    pull_encrypted_vault_backup, push_encrypted_vault_backup, store_artifact_in_codex,
 };
 pub use summary::{
     ApproveDecision, SecurityWarning, SourceVerificationBadge, TransactionSummary,
