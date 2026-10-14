@@ -14,6 +14,8 @@ pub const MAX_ENTRIES_PER_REGISTRY_PAGE: usize = 32;
 
 /// Entry kind: `0` = Deployer (`caller_program_id == program`), `1` = Third-Party (`author` signer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistryEntryKind {
     Deployer = 0,

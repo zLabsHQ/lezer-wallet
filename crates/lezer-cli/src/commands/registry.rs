@@ -10,6 +10,7 @@ use lezer_core::{
 use serde_json::{Value, json};
 
 #[derive(Subcommand, Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum RegistrySubcommand {
     /// Lookup an on-chain LP-0023 registry entry by its 64-hex RISC0 Image ID (`ProgramId`).
     Lookup {
