@@ -1,0 +1,12 @@
+{
+  "name": "@lezer/portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lezer Non-Custodial Ecosystem Portal (Docs, MockLezerProvider SDK Playground, LP-0023 Registry Explorer, and Live 16-Shard Adoption Dashboard)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@lezer/provider": "1.0.0",
+    "@lezer/registry": "1.0.0"
+  }
+}
