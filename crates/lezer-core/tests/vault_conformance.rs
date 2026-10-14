@@ -15,7 +15,8 @@ use std::path::PathBuf;
 use lezer_adapter::{derive_private_account, derive_public_account};
 use lezer_core::{
     Argon2ParamsRecord, CanonicalWalletStateV1, ErrorCategory, ErrorCode, LezerError,
-    SealedVaultEnvelopeV1, compute_header_mac_hex, derive_wrapping_key,
+    SealedVaultEnvelopeV1, TxIntent, VerificationBadgeState, compute_author_shard_for_account,
+    compute_header_mac_hex, decode_and_summarize_intent, derive_wrapping_key,
 };
 use serde::Deserialize;
 
@@ -151,5 +152,74 @@ fn vault_v1_vectors_conformance() {
         // Correct password unseals byte-identically
         let unsealed = env.unseal(&v.password).unwrap();
         assert_eq!(unsealed, state);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ShardRoutingFile {
+    vectors: Vec<ShardRoutingVector>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShardRoutingVector {
+    account_id: String,
+    expected_shard_id: u8,
+    expected_shard_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransactionSummariesFile {
+    vectors: Vec<TransactionSummaryVector>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransactionSummaryVector {
+    proposal_id: String,
+    originating_dapp: String,
+    intent: TxIntent,
+    expected_badge_state: VerificationBadgeState,
+    expected_requires_unverified_ack: bool,
+    expected_requires_critical_override: bool,
+    expected_warning_code: String,
+}
+
+#[test]
+fn shard_routing_and_transaction_summary_fixtures_conformance() {
+    let shard_path = repo_root().join("tests/conformance/fixtures/shard_routing_vectors.json");
+    let shard_file: ShardRoutingFile =
+        serde_json::from_str(&fs::read_to_string(&shard_path).unwrap()).unwrap();
+    for v in shard_file.vectors {
+        let (_bytes, shard_id, shard_key) =
+            compute_author_shard_for_account(&v.account_id).unwrap();
+        assert_eq!(shard_id, v.expected_shard_id);
+        assert_eq!(shard_key, v.expected_shard_key);
+    }
+
+    let sum_path = repo_root().join("tests/conformance/fixtures/transaction_summaries.json");
+    let sum_file: TransactionSummariesFile =
+        serde_json::from_str(&fs::read_to_string(&sum_path).unwrap()).unwrap();
+    for v in sum_file.vectors {
+        let summary = decode_and_summarize_intent(
+            &v.proposal_id,
+            &v.originating_dapp,
+            &v.intent,
+            1_000,
+            false,
+        );
+        assert_eq!(summary.verification_badge.state, v.expected_badge_state);
+        assert_eq!(
+            summary.requires_unverified_ack,
+            v.expected_requires_unverified_ack
+        );
+        assert_eq!(
+            summary.requires_critical_override,
+            v.expected_requires_critical_override
+        );
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|w| w.code == v.expected_warning_code)
+        );
     }
 }

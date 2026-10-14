@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "description": "Canonical TransactionSummary & 4-State SourceVerificationBadge Golden Vectors",
+  "vectors": [
+    {
+      "proposal_id": "prop_gold_1",
+      "originating_dapp": "lezer_testimonial_ui",
+      "intent": {
+        "kind": "submit_testimonial",
+        "author": "Public/BH2zpUcwfB6cTKjYp2N8FFQNYSxjighmDfMYveFCC1Wf",
+        "submission_id": "lp0021-lezer",
+        "shard_key": "0f",
+        "page_key": "00",
+        "username": "@alice",
+        "text": "I use Lezer Wallet",
+        "timestamp": 1760000000
+      },
+      "expected_badge_state": "verified_source",
+      "expected_requires_unverified_ack": false,
+      "expected_requires_critical_override": false,
+      "expected_warning_code": "WARN_PUBLIC_LINKABILITY"
+    },
+    {
+      "proposal_id": "prop_gold_2",
+      "originating_dapp": "lezer_wallet_ui",
+      "intent": {
+        "kind": "token_set_authority",
+        "definition_id": "Public/BH2zpUcwfB6cTKjYp2N8FFQNYSxjighmDfMYveFCC1Wf",
+        "symbol": "LEZERUSD",
+        "current_authority": "Public/BH2zpUcwfB6cTKjYp2N8FFQNYSxjighmDfMYveFCC1Wf",
+        "new_authority": null
+      },
+      "expected_badge_state": "verified_source",
+      "expected_requires_unverified_ack": false,
+      "expected_requires_critical_override": true,
+      "expected_warning_code": "WARN_AUTHORITY_OR_UNLIMITED_GRANT"
+    }
+  ]
+}
