@@ -2,6 +2,7 @@
 members = [
     "registry_core",
     "methods",
+    "examples",
 ]
 exclude = [
     "methods/guest",
