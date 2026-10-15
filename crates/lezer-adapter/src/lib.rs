@@ -7,6 +7,7 @@
 
 pub mod accounts;
 pub mod ata;
+pub mod codecs;
 pub mod faucet;
 pub mod profile;
 pub mod prover;
@@ -33,6 +34,10 @@ pub use accounts::{
     parse_public_account_id, scan_notes_with_view_tag,
 };
 pub use ata::{ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_TAG, DerivedAta, decode_id_bytes_32, derive_ata};
+pub use codecs::{
+    bytes_to_risc0_u32_words, program_id_words_from_hex, program_id_words_to_hex,
+    risc0_u32_words_to_bytes,
+};
 pub use faucet::{
     FAUCET_PRIZE_LEZ, FaucetClaimReceipt, FaucetInfoView, MAX_STALE_CHALLENGE_RETRIES,
     MAX_SUPPORTED_DIFFICULTY_BYTES, PinataChallenge, claim_from_faucet, get_faucet_info,
