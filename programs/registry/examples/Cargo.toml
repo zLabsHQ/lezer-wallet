@@ -1,0 +1,17 @@
+[package]
+name = "lezer_registry_examples"
+version = "1.0.0"
+edition = "2024"
+
+[[bin]]
+name = "generate_idl"
+path = "src/bin/generate_idl.rs"
+
+[[bin]]
+name = "cycle_bench"
+path = "src/bin/cycle_bench.rs"
+
+[dependencies]
+registry_core = { path = "../registry_core" }
+lezer_registry_methods = { path = "../methods" }
+serde_json = "1"

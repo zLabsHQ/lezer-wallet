@@ -1,0 +1,8 @@
+[package]
+name = "lezer_registry"
+version = "1.0.0"
+edition = "2024"
+
+[spel]
+guest_bin = "registry"
+idl_output = "idl/lezer_registry-idl.json"
