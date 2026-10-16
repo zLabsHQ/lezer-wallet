@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Lezer Wallet — Logos Execution Zone (LEZ)",
+  "version": "1.0.0",
+  "description": "Two-Gear LEZ Browser Extension: Pure-WASM Public Signing (Gear 1) + lezerd Native ZK Prover (Gear 2).",
+  "permissions": [
+    "storage",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+      "js": ["inpage.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
