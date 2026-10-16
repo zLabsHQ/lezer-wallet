@@ -1,0 +1,12 @@
+{
+  "name": "@lezer/recovery",
+  "version": "1.0.0",
+  "description": "Lezer 2-of-3 Shamir Secret Sharing (GF(256)), WebAuthn Passkey PRF & Logos Storage Recovery Kit",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "files": [
+    "src"
+  ]
+}
