@@ -3735,6 +3735,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lezer-wasm"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "zeroize",
+]
+
+[[package]]
 name = "lezer_wallet_provider"
 version = "0.1.0"
 dependencies = [
@@ -3743,6 +3756,17 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "lezerd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lezer-core",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
