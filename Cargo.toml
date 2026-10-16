@@ -6,6 +6,7 @@ members = [
     "crates/lezer-core",
     "crates/lezer-cli",
     "crates/lezer-wasm",
+    "crates/lezerd",
     "modules/lezer_wallet_provider",
 ]
 
