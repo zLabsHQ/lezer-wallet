@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  boundaries-and-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce Architectural & Zero-Telemetry Boundaries
+        run: ./tooling/check-boundaries.sh
+      - name: Validate Basecamp Module Catalog (logos-repo.json)
+        run: ./tooling/release-catalog.sh
+
+  rust-and-conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libclang-dev
+      - name: Clippy Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run SPEL Guest Program Tests
+        run: |
+          cargo test --manifest-path programs/testimonial/Cargo.toml
+          cargo test --manifest-path programs/registry/Cargo.toml
+      - name: Run Workspace Conformance & Release Gate Suite (RC-01, RC-02, RC-03)
+        run: cargo test --workspace
+      - name: Run Clean-Room Evaluator Demo Suite
+        run: ./tooling/demo.sh
