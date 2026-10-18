@@ -6,8 +6,8 @@
   "description": "Native LEZ Wallet, Provider SDK, Token/ATA Manager, Faucet, and On-Chain Testimonial Suite for Logos Basecamp.",
   "author": "Lezer Team",
   "license": "MIT OR Apache-2.0",
-  "homepage": "https://github.com/logos-co/lezer-wallet",
-  "indexUrl": "https://github.com/logos-co/lezer-wallet/releases/download/index/index.json",
+  "homepage": "https://github.com/zLabsHQ/lezer-wallet",
+  "indexUrl": "https://github.com/zLabsHQ/lezer-wallet/releases/download/index/index.json",
   "trustedSigners": [],
   "modules": [
     {
