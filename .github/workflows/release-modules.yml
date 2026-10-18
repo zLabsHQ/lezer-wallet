@@ -1,35 +1,48 @@
 name: Release Basecamp Modules (.lgx & logos-repo.json)
 
 on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main, master]
   push:
     tags:
       - 'v*'
   workflow_dispatch: {}
 
-permissions:
-  contents: write
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
-  release-lgx-catalog:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            system: x86_64-linux
-          - os: macos-14
-            system: aarch64-darwin
-          - os: macos-15-intel
-            system: x86_64-darwin
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v30
-      - name: Validate Catalog Manifests
-        run: ./tooling/release-catalog.sh
-      - name: Build Basecamp .lgx Modules
-        run: |
-          nix build ./modules/lezer_wallet_provider
-          nix build ./modules/lezer_wallet_ui
-          nix build ./modules/lezer_faucet_ui
-          nix build ./modules/lezer_testimonial_ui
+  release-wallet-provider:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: write
+    uses: logos-co/logos-modules-release-action/.github/workflows/release.yml@v1
+    with:
+      module_path: modules/lezer_wallet_provider
+
+  release-wallet-ui:
+    needs: [release-wallet-provider]
+    permissions:
+      contents: write
+    uses: logos-co/logos-modules-release-action/.github/workflows/release.yml@v1
+    with:
+      module_path: modules/lezer_wallet_ui
+
+  release-faucet-ui:
+    needs: [release-wallet-provider]
+    permissions:
+      contents: write
+    uses: logos-co/logos-modules-release-action/.github/workflows/release.yml@v1
+    with:
+      module_path: modules/lezer_faucet_ui
+
+  release-testimonial-ui:
+    needs: [release-wallet-provider]
+    permissions:
+      contents: write
+    uses: logos-co/logos-modules-release-action/.github/workflows/release.yml@v1
+    with:
+      module_path: modules/lezer_testimonial_ui
