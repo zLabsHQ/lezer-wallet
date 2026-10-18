@@ -148,8 +148,7 @@ lezer-wallet/
 ├── tests/
 │   ├── conformance/            # Golden JSON fixtures (vault, errors, shards, summaries)
 │   └── e2e/                    # Standalone sequencer E2E + Release Gates RC-01..RC-03
-├── tooling/                    # Boundary checks, spikes, catalog, demo, verify scripts
-└── docs/                       # Internal engineering specs (00-10)
+└── tooling/                    # Boundary checks, spikes, catalog, demo, verify scripts
 ```
 
 ## Quickstart
@@ -198,16 +197,9 @@ This runs a clean-room E2E suite covering: boundary checks, catalog validation, 
 
 ## Documentation
 
-- [`docs/00-INDEX.md`](docs/00-INDEX.md) — Master index & LP-0021/LP-0023 traceability matrix
-- [`docs/01-SYSTEM-ARCHITECTURE.md`](docs/01-SYSTEM-ARCHITECTURE.md) — Cryptographic engine & vault design
-- [`docs/02-FEATURES-AND-PRODUCT-SPEC.md`](docs/02-FEATURES-AND-PRODUCT-SPEC.md) — Token/ATA engine & UX flows
-- [`docs/03-PROTOCOL-SDK-AND-IPC-SPEC.md`](docs/03-PROTOCOL-SDK-AND-IPC-SPEC.md) — LIDL contract & `@lezer/provider` API
-- [`docs/04-ONCHAIN-PROGRAMS-AND-REGISTRY.md`](docs/04-ONCHAIN-PROGRAMS-AND-REGISTRY.md) — SPEL programs & LP-0023
-- [`docs/06-PACKAGING-CI-AND-EXECUTION-ROADMAP.md`](docs/06-PACKAGING-CI-AND-EXECUTION-ROADMAP.md) — Nix packaging, CI gates, 24-day schedule
-- [`docs/07-VISION-AND-PLATFORM-STRATEGY.md`](docs/07-VISION-AND-PLATFORM-STRATEGY.md) — Post-prize vision (extension, mobile, Shamir, LP-0022)
-- [`docs/08-ARCHITECTURE-DECISIONS-AND-STACK.md`](docs/08-ARCHITECTURE-DECISIONS-AND-STACK.md) — Finalized ADRs & concurrency rules
-- [`docs/09-REPOSITORY-AND-FOLDER-STRUCTURE.md`](docs/09-REPOSITORY-AND-FOLDER-STRUCTURE.md) — File-by-file blueprint
-- [`docs/10-PHASE-WISE-IMPLEMENTATION-PLAN.md`](docs/10-PHASE-WISE-IMPLEMENTATION-PLAN.md) — Phase 0→5 execution plan
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — System design, component boundaries, trust model & release gates
+- [`DEVELOPERS.md`](DEVELOPERS.md) — dApp integration guide (`@lezer/provider`, `LezerProvider.qml`, LP-0023)
+- [`PRIVACY.md`](PRIVACY.md) — Cryptography, threat model, zero-telemetry enforcement & audit details
 
 ## License
 
