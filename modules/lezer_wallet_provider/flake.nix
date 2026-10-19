@@ -222,7 +222,7 @@
           cargoDeps = fetchCargoVendorPatched {
             name = "lezer_wallet_provider-1.0.0";
             src = walletSource;
-            hash = lib.fakeHash;
+            hash = "sha256-6GihDNUzp1SURAM8C7A1Yz4SPctMxWtd3y6DI5dQTuc=";
           };
           cargoBuildFlags = [ "-p" "lezer_wallet_provider" ];
           doCheck = false;
