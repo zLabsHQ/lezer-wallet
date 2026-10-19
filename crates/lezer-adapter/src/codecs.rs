@@ -14,8 +14,10 @@ pub fn bytes_to_risc0_u32_words(bytes: &[u8]) -> Vec<u32> {
         padded.push(0);
     }
     padded
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("4-byte chunk")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
         .collect()
 }
 
@@ -39,8 +41,8 @@ pub fn program_id_words_from_hex(hex_str: &str) -> Result<[u32; 8]> {
         );
     }
     let mut words = [0u32; 8];
-    for (i, chunk) in bytes.chunks_exact(4).enumerate() {
-        words[i] = u32::from_le_bytes(chunk.try_into().unwrap());
+    for (i, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        words[i] = u32::from_le_bytes(*chunk);
     }
     Ok(words)
 }
