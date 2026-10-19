@@ -2,14 +2,12 @@ module lezer_wallet_provider {
   version "1.0.0"
   description "Lezer LEZ Wallet & Provider SDK — session-gated custody, token/ATA engine, and LP-0023 verified approval broker"
 
-  // ── 1. Public / Unauthenticated Discovery ──────────────────────────────
   method get_status() -> bstr
     description "Returns active zone, sequencer URL, sync height, protocol version, and fee model"
 
   method get_registry_entry(program_id: tstr) -> bstr
     description "Resolves on-chain LP-0023 deployer & third-party metadata for a 64-hex program_id"
 
-  // ── 2. dApp Connection & Session Lifecycle ─────────────────────────────
   method connect(dapp_info_json: bstr) -> bstr
     description "Queues a connection request in the Approval Broker; emits approvalRequested and returns {request_id, status: 'pending'}"
 
@@ -19,7 +17,6 @@ module lezer_wallet_provider {
   method disconnect(session_token: tstr) -> bstr
     description "Revokes the caller's active session token and cancels any pending proposals"
 
-  // ── 3. Session-Gated dApp Read Operations ──────────────────────────────
   method get_accounts(session_token: tstr) -> bstr
     description "Returns AccountRef[] explicitly authorized for this session_token (never returns secret keys)"
 
@@ -35,15 +32,12 @@ module lezer_wallet_provider {
   method faucet_info() -> bstr
     description "Returns live Piñata faucet pool balance, PoW difficulty, and claim eligibility"
 
-  // ── 4. Session-Gated Transaction Proposal ──────────────────────────────
   method propose_transaction(session_token: tstr, intent_json: bstr) -> bstr
     description "Decodes intent (NativeTransfer, TokenTransfer, TokenCreate, FaucetClaim, ProgramCall), attaches LP-0023 verification status, queues Proposal, and emits approvalRequested"
 
-  // ── 5. Privileged Wallet UI / Controller Operations ────────────────────
   method execute_privileged(ui_token: tstr, op_json: bstr) -> bstr
     description "Privileged wallet worker contract for lezer_wallet_ui / CLI (vault unlock, account creation, approve/reject requests)"
 
-  // ── 6. Asynchronous Events to UI & Connected dApps ─────────────────────
   event approvalRequested(requestId: tstr, payload: bstr)
   event requestResolved(requestId: tstr, payload: bstr)
   event transactionUpdated(requestId: tstr, payload: bstr)
