@@ -1,7 +1,0 @@
-[package]
-name = "lezer_testimonial_methods"
-version = "1.0.0"
-edition = "2024"
-
-[dependencies]
-testimonial_core = { path = "../testimonial_core" }
