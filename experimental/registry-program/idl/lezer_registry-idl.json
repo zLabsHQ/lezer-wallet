@@ -1,26 +1,75 @@
 {
   "name": "lezer_registry",
   "version": "1.0.0",
-  "program_id_hex": "be6cd0c3c15e6d6236cadf3af0eb63332473f223c0713256f7a5b83e0fac2cf5",
+  "program_id_hex": null,
   "accounts": [
     {
       "name": "RegistryEntry",
       "type": {
         "kind": "struct",
         "fields": [
-          { "name": "program_id", "type": { "array": ["u8", 32] } },
-          { "name": "author", "type": { "array": ["u8", 32] } },
-          { "name": "kind", "type": "u8" },
-          { "name": "name", "type": "string" },
-          { "name": "version", "type": "string" },
-          { "name": "description", "type": "string" },
-          { "name": "tags", "type": "string" },
-          { "name": "idl_cid", "type": "string" },
-          { "name": "source_cid", "type": "string" },
-          { "name": "repo_url", "type": "string" },
-          { "name": "commit", "type": "string" },
-          { "name": "build_config", "type": "string" },
-          { "name": "registered_at", "type": "u64" }
+          {
+            "name": "program_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "author",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "kind",
+            "type": "u8"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "description",
+            "type": "string"
+          },
+          {
+            "name": "tags",
+            "type": "string"
+          },
+          {
+            "name": "idl_cid",
+            "type": "string"
+          },
+          {
+            "name": "source_cid",
+            "type": "string"
+          },
+          {
+            "name": "repo_url",
+            "type": "string"
+          },
+          {
+            "name": "commit",
+            "type": "string"
+          },
+          {
+            "name": "build_config",
+            "type": "string"
+          },
+          {
+            "name": "registered_at",
+            "type": "u64"
+          }
         ]
       }
     },
@@ -29,9 +78,31 @@
       "type": {
         "kind": "struct",
         "fields": [
-          { "name": "shard_id", "type": "u8" },
-          { "name": "page_id", "type": "u8" },
-          { "name": "entries", "type": { "vec": { "tuple": [{ "array": ["u8", 32] }, "u8", "u64"] } } }
+          {
+            "name": "shard_id",
+            "type": "u8"
+          },
+          {
+            "name": "page_id",
+            "type": "u8"
+          },
+          {
+            "name": "entries",
+            "type": {
+              "vec": {
+                "tuple": [
+                  {
+                    "array": [
+                      "u8",
+                      32
+                    ]
+                  },
+                  "u8",
+                  "u64"
+                ]
+              }
+            }
+          }
         ]
       }
     }
@@ -40,67 +111,226 @@
     {
       "name": "register_deployer",
       "accounts": [
-        { "name": "entry", "init": true, "writable": true, "signer": false },
-        { "name": "shard_page", "init": false, "writable": true, "signer": false }
+        {
+          "name": "entry",
+          "init": true,
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "shard_page",
+          "init": false,
+          "writable": true,
+          "signer": false
+        }
       ],
       "args": [
-        { "name": "program", "type": { "array": ["u8", 32] } },
-        { "name": "shard_key", "type": "string" },
-        { "name": "page_key", "type": "string" },
-        { "name": "name", "type": "string" },
-        { "name": "version", "type": "string" },
-        { "name": "description", "type": "string" },
-        { "name": "tags", "type": "string" },
-        { "name": "idl_cid", "type": "string" },
-        { "name": "source_cid", "type": "string" },
-        { "name": "repo_url", "type": "string" },
-        { "name": "commit", "type": "string" },
-        { "name": "build_config", "type": "string" },
-        { "name": "registered_at", "type": "u64" }
+        {
+          "name": "program",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "shard_key",
+          "type": "string"
+        },
+        {
+          "name": "page_key",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "version",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "tags",
+          "type": "string"
+        },
+        {
+          "name": "idl_cid",
+          "type": "string"
+        },
+        {
+          "name": "source_cid",
+          "type": "string"
+        },
+        {
+          "name": "repo_url",
+          "type": "string"
+        },
+        {
+          "name": "commit",
+          "type": "string"
+        },
+        {
+          "name": "build_config",
+          "type": "string"
+        },
+        {
+          "name": "registered_at",
+          "type": "u64"
+        }
       ]
     },
     {
       "name": "register_self",
       "accounts": [
-        { "name": "entry", "init": true, "writable": true, "signer": false },
-        { "name": "shard_page", "init": false, "writable": true, "signer": false }
+        {
+          "name": "entry",
+          "init": true,
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "shard_page",
+          "init": false,
+          "writable": true,
+          "signer": false
+        }
       ],
       "args": [
-        { "name": "shard_key", "type": "string" },
-        { "name": "page_key", "type": "string" },
-        { "name": "name", "type": "string" },
-        { "name": "version", "type": "string" },
-        { "name": "description", "type": "string" },
-        { "name": "tags", "type": "string" },
-        { "name": "idl_cid", "type": "string" },
-        { "name": "source_cid", "type": "string" },
-        { "name": "repo_url", "type": "string" },
-        { "name": "commit", "type": "string" },
-        { "name": "build_config", "type": "string" },
-        { "name": "registered_at", "type": "u64" }
+        {
+          "name": "shard_key",
+          "type": "string"
+        },
+        {
+          "name": "page_key",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "version",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "tags",
+          "type": "string"
+        },
+        {
+          "name": "idl_cid",
+          "type": "string"
+        },
+        {
+          "name": "source_cid",
+          "type": "string"
+        },
+        {
+          "name": "repo_url",
+          "type": "string"
+        },
+        {
+          "name": "commit",
+          "type": "string"
+        },
+        {
+          "name": "build_config",
+          "type": "string"
+        },
+        {
+          "name": "registered_at",
+          "type": "u64"
+        }
       ]
     },
     {
       "name": "register_third_party",
       "accounts": [
-        { "name": "entry", "init": true, "writable": true, "signer": false },
-        { "name": "shard_page", "init": false, "writable": true, "signer": false },
-        { "name": "author", "init": false, "writable": false, "signer": true }
+        {
+          "name": "entry",
+          "init": true,
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "shard_page",
+          "init": false,
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "author",
+          "init": false,
+          "writable": false,
+          "signer": true
+        }
       ],
       "args": [
-        { "name": "program", "type": { "array": ["u8", 32] } },
-        { "name": "shard_key", "type": "string" },
-        { "name": "page_key", "type": "string" },
-        { "name": "name", "type": "string" },
-        { "name": "version", "type": "string" },
-        { "name": "description", "type": "string" },
-        { "name": "tags", "type": "string" },
-        { "name": "idl_cid", "type": "string" },
-        { "name": "source_cid", "type": "string" },
-        { "name": "repo_url", "type": "string" },
-        { "name": "commit", "type": "string" },
-        { "name": "build_config", "type": "string" },
-        { "name": "registered_at", "type": "u64" }
+        {
+          "name": "program",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "shard_key",
+          "type": "string"
+        },
+        {
+          "name": "page_key",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "version",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "tags",
+          "type": "string"
+        },
+        {
+          "name": "idl_cid",
+          "type": "string"
+        },
+        {
+          "name": "source_cid",
+          "type": "string"
+        },
+        {
+          "name": "repo_url",
+          "type": "string"
+        },
+        {
+          "name": "commit",
+          "type": "string"
+        },
+        {
+          "name": "build_config",
+          "type": "string"
+        },
+        {
+          "name": "registered_at",
+          "type": "u64"
+        }
       ]
     }
   ],

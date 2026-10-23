@@ -4,13 +4,13 @@
 //! configured `sequencer_url`, local LEZ node, or configured Logos Storage (Codex) node.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::profile::{NetworkProfile, PINATA_FAUCET_ACCOUNT_BASE58};
+use crate::profile::NetworkProfile;
 
 /// Strict network allowlist guard (`AllowedEndpointsGuard`).
 ///
@@ -81,30 +81,6 @@ pub struct RpcAccountState {
     pub data_raw: Value,
     /// True if `program_owner == [0; 8]` (default-owned account on LEZ v0.3/v0.4).
     pub is_default_owned: bool,
-}
-
-/// Piñata faucet status and challenge read from the sequencer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PinataFaucetStatus {
-    pub faucet_account_id: String,
-    pub balance: u128,
-    pub nonce: u128,
-    pub difficulty_bits: u8,
-    pub challenge_summary: String,
-    pub protocol_generation: String,
-}
-
-/// Report produced by Spike S-02 (Live Sequencer Compatibility).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SequencerCompatibilityReport {
-    pub sequencer_url: String,
-    pub profile_id: String,
-    pub reachable: bool,
-    pub latency_ms: u64,
-    pub latest_block_id: u64,
-    pub program_ids: BTreeMap<String, [u32; 8]>,
-    pub default_owned_account_check: RpcAccountState,
-    pub pinata_status: PinataFaucetStatus,
 }
 
 /// JSON-RPC client for the Logos Execution Zone (LEZ) sequencer.
@@ -230,75 +206,6 @@ impl LezRpcClient {
         })
     }
 
-    /// Inspect the Piñata faucet account (`EfQhKQAkX2FJiwNii2WFQsGndjvF1Mzd7RuVe7QdPLw7`)
-    /// on the connected sequencer.
-    pub async fn get_pinata_faucet_status(&self) -> Result<PinataFaucetStatus> {
-        let state = self.get_account_state(PINATA_FAUCET_ACCOUNT_BASE58).await?;
-
-        // In v0.2.4 `data` is a 33-byte array `[difficulty, seed..32]`.
-        // In v0.3/v0.4 `data` is `{ "shards": { ... } }` or byte array.
-        let (difficulty_bits, challenge_summary, protocol_generation) =
-            if let Some(arr) = state.data_raw.as_array() {
-                let diff = arr.first().and_then(|v| v.as_u64()).unwrap_or(0) as u8;
-                (
-                    diff,
-                    format!("33-byte PoW seed (difficulty={diff} leading zero bytes)"),
-                    "lez-v0.2.4".to_string(),
-                )
-            } else if state.data_raw.get("shards").is_some() {
-                (
-                    2,
-                    format!("sharded account state: {}", state.data_raw),
-                    "lez-v0.4-sharded".to_string(),
-                )
-            } else {
-                (
-                    0,
-                    format!("raw account data: {}", state.data_raw),
-                    "lez-v0.3+".to_string(),
-                )
-            };
-
-        Ok(PinataFaucetStatus {
-            faucet_account_id: PINATA_FAUCET_ACCOUNT_BASE58.to_string(),
-            balance: state.balance,
-            nonce: state.nonce,
-            difficulty_bits,
-            challenge_summary,
-            protocol_generation,
-        })
-    }
-
-    /// Execute **Spike S-02 (Live Sequencer Compatibility)**:
-    /// 1. Verify `getProgramIds()` on live testnet.
-    /// 2. Verify default-owned account credit compatibility (`program_owner == [0; 8]`).
-    /// 3. Verify Piñata challenge / account reads on live testnet.
-    pub async fn run_spike_s02(&self) -> Result<SequencerCompatibilityReport> {
-        let start = Instant::now();
-        let program_ids = self.get_program_ids().await?;
-        let latest_block_id = self.get_last_block_id().await?;
-        let latency_ms = start.elapsed().as_millis() as u64;
-
-        // Probe a fresh uninitialized default-owned public account address.
-        let probe_account = "11111111111111111111111111111111";
-        let default_owned_account_check = self.get_account_state(probe_account).await?;
-        if !default_owned_account_check.is_default_owned {
-            bail!("expected fresh account to be default-owned ([0; 8])");
-        }
-
-        let pinata_status = self.get_pinata_faucet_status().await?;
-
-        Ok(SequencerCompatibilityReport {
-            sequencer_url: self.profile.sequencer_url.clone(),
-            profile_id: self.profile.id.clone(),
-            reachable: true,
-            latency_ms,
-            latest_block_id,
-            program_ids,
-            default_owned_account_check,
-            pinata_status,
-        })
-    }
 }
 
 fn parse_u128_value(v: &Value) -> Option<u128> {
@@ -317,7 +224,7 @@ mod tests {
 
     #[test]
     fn allowlist_guard_blocks_unauthorized_endpoints() {
-        let profile = NetworkProfile::testnet_default();
+        let profile = NetworkProfile::testnet();
         let guard = AllowedEndpointsGuard::from_profile(&profile);
 
         assert!(guard.check_url("https://testnet.lez.logos.co").is_ok());

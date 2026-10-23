@@ -1,281 +1,661 @@
-//! `lezer` — First-Class Command-Line Interface for Lezer Wallet.
+//! `lezer` — command-line wallet for the Logos Execution Zone.
 //!
-//! Implements fd-level `dup` / `dup2` stdout isolation (`docs/01` §2.1) when `--json`
-//! is passed so diagnostic output from upstream libraries or `risc0-zkvm` is routed
-//! to `stderr`, guaranteeing pure machine-readable JSON on `stdout`.
+//! Every command runs against the official upstream engine via `lezer-core`. The vault is
+//! unlocked per invocation with `LEZER_PASSWORD` (non-interactive) or a hidden prompt.
+//! Upstream libraries print progress to stdout; we redirect fd 1 to stderr and write our
+//! result to the original stdout, so `--json` output is always clean.
 
-mod commands;
-
-use std::io::Write;
+use std::io::Write as _;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
-use commands::account::AccountSubcommand;
-use commands::faucet::FaucetSubcommand;
-use commands::registry::RegistrySubcommand;
-use commands::testimonial::TestimonialSubcommand;
-use commands::token::TokenSubcommand;
-use commands::vault::BackupSubcommand;
-use lezer_adapter::LezAdapter;
-use lezer_core::{CANONICAL_SUBMISSION_ID, LezerError, WalletEngine, default_lezer_home};
+use clap::{Parser, Subcommand, ValueEnum};
+use lezer_adapter::{AccountKind, LezRpcClient, NetworkProfile, TxReceipt, TxStatus, peak_rss_bytes};
+use lezer_core::{ErrorCode, LezerError, LezerResult, WalletEngine, default_lezer_home};
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "lezer",
-    version,
-    about = "Lezer LEZ Wallet CLI — Native Rust Wallet, Token/ATA Manager & On-Chain Verifier"
-)]
+#[command(name = "lezer", version, about = "Lezer — wallet for the Logos Execution Zone (LEZ)")]
 struct Cli {
-    /// Emit pure machine-readable JSON on stdout (isolates fd 1 via dup2).
-    #[arg(long, global = true, default_value_t = false)]
+    /// Machine-readable JSON output.
+    #[arg(long, global = true)]
     json: bool,
-
-    /// Path to the encrypted vault file (`~/.lezer/vault.enc` by default).
+    /// Wallet directory (vault.enc, cache.json, logs). Default: $LEZER_HOME or ~/.lezer
     #[arg(long, global = true)]
-    vault: Option<PathBuf>,
-
-    /// Vault password (defaults to `LEZER_PASSWORD` env var or empty string in non-interactive mode).
+    home: Option<PathBuf>,
+    /// Network: `testnet`, `localnet`, or a sequencer URL. Default: network stored in the vault.
     #[arg(long, global = true)]
-    password: Option<String>,
-
-    /// Network/zone profile selector (`lez-testnet-0.4`, `lez-localnet`, or sequencer URL).
-    #[arg(long, global = true)]
-    zone: Option<String>,
-
+    network: Option<String>,
     #[command(subcommand)]
-    command: Commands,
+    command: Command,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
-    /// Initialize a new 24-word BIP-39 mnemonic vault (`vault.enc`).
+enum Command {
+    /// Create a new wallet and print its 24-word recovery phrase once.
     Init,
-    /// Restore an existing 24-word BIP-39 mnemonic into `vault.enc`.
+    /// Restore a wallet from a recovery phrase (read from stdin or a hidden prompt).
     Restore {
-        /// 24-word (or 12-word) BIP-39 mnemonic phrase.
+        /// Scan the chain for previously used accounts up to this key-tree depth.
         #[arg(long)]
-        mnemonic: String,
+        discover_depth: Option<u32>,
     },
-    /// Unlock `vault.enc` and verify password integrity.
-    Unlock,
-    /// Lock the vault and zeroize in-memory key material.
-    Lock,
-    /// Print canonical wallet state snapshot and network status.
+    /// Wallet snapshot and chain status.
     Status,
-    /// Create, list, or inspect accounts in the vault.
+    /// Sequencer reachability and version check (no wallet needed).
+    Network,
+    /// Account management.
     Account {
         #[command(subcommand)]
-        sub: AccountSubcommand,
+        sub: AccountCmd,
     },
-    /// Query native LEZ balance for an account (supports Offline Mode via `cache.json`).
+    /// Native balance of an account (label or id).
     Balance {
-        /// Account label (e.g. `alice`) or `Public/<base58>` identifier.
-        #[arg(long, default_value = "Main Public")]
+        #[arg(default_value = "main")]
         account: String,
     },
-    /// Execute a native LEZ transfer (`lezer transfer --from alice --to bob --amount 50` or `--to-uri lezer:priv1...`).
-    Transfer {
-        /// Sender account label, `Public/<base58>`, or `Private/<base58>` ID.
+    /// Scan new blocks for incoming private notes.
+    Sync,
+    /// Deploy a RISC0 program through the official program loader.
+    Program {
+        #[command(subcommand)]
+        sub: ProgramCmd,
+    },
+    /// LP-0021 on-chain testimonials.
+    Testimonial {
+        #[command(subcommand)]
+        sub: TestimonialCmd,
+    },
+    /// LP-0023 program registry: read the directory or self-register a program.
+    Registry {
+        #[command(subcommand)]
+        sub: RegistryCmd,
+    },
+    /// List every testimonial straight from the sequencer (no wallet, no indexer).
+    VerifyAdoption {
+        /// Testimonial program id; default: $LEZER_TESTIMONIAL_PROGRAM.
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Fungible tokens via the deployed `lezer_token` program (real on-chain state).
+    Token {
+        #[command(subcommand)]
+        sub: TokenCmd,
+    },
+    /// Send native tokens. Mode (public/shielded/deshielded/private) follows from the accounts.
+    Send {
         #[arg(long)]
         from: String,
-        /// Recipient account label, `Public/<base58>`, `Private/<base58>`, or `lezer:priv1...` URI.
-        #[arg(long, alias = "to-uri")]
+        /// Label, `Public/..`, owned `Private/..`, or a `lezer:priv1…` receive address.
+        #[arg(long)]
         to: String,
-        /// Amount of native LEZ to transfer.
         #[arg(long)]
         amount: u128,
     },
-    /// Piñata Proof-of-Work Faucet commands (`info`, `claim`).
-    Faucet {
-        #[command(subcommand)]
-        sub: FaucetSubcommand,
-    },
-    /// Fungible Token Program (`TOKEN_ID`) and Associated Token Account (`ATA`) commands.
-    Token {
-        #[command(subcommand)]
-        sub: TokenSubcommand,
-    },
-    /// LP-0021 Sharded On-Chain Testimonial commands (`submit`, `list`).
-    Testimonial {
-        #[command(subcommand)]
-        sub: TestimonialSubcommand,
-    },
-    /// LP-0023 Program Registry commands (`lookup`, `list`, `search`, `register`, `verify`).
-    Registry {
-        #[command(subcommand)]
-        sub: RegistrySubcommand,
-    },
-    /// Client-side encrypted `SealedVaultEnvelopeV1` backup on Logos Storage (`push`, `pull`).
-    Backup {
-        #[command(subcommand)]
-        sub: BackupSubcommand,
-    },
-    /// Stateless 16-shard evaluator adoption verifier (`lezer verify-adoption --submission-id lp0021-lezer`).
-    VerifyAdoption {
-        /// Submission identifier to audit (defaults to `lp0021-lezer`).
-        #[arg(long, default_value = CANONICAL_SUBMISSION_ID)]
-        submission_id: String,
-        /// Optional sequencer RPC URL override.
+}
+
+#[derive(Subcommand, Debug)]
+enum AccountCmd {
+    /// Create an account.
+    New {
+        #[arg(value_enum)]
+        kind: Kind,
         #[arg(long)]
-        sequencer: Option<String>,
+        label: Option<String>,
     },
-    /// Run Phase 0 pre-build live testnet spikes (S-01, S-02).
-    Spikes,
+    /// List accounts.
+    List,
+    /// Import a public account; the 32-byte hex signing key is read from stdin or a hidden prompt.
+    Import {
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Add a label to an account.
+    Label { account: String, label: String },
+    /// Print the receive address of a private account.
+    Receive { account: String },
+    /// Set the active account.
+    Use { account: String },
 }
 
-/// Dedicated JSON output stream isolated from `stdout` via `dup` / `dup2(2, 1)`.
-struct IsolatedJsonWriter {
-    #[cfg(unix)]
-    file: Option<std::fs::File>,
+#[derive(Subcommand, Debug)]
+enum ProgramCmd {
+    /// Deploy a program binary (`.bin` from `cargo risczero build`).
+    Deploy {
+        elf: PathBuf,
+        /// Funded public account that pays the deployment fees.
+        #[arg(long, default_value = "main")]
+        payer: String,
+    },
+    /// Print the RISC0 image id of a program binary (compare with a deployment).
+    ImageId { elf: PathBuf },
 }
 
-impl IsolatedJsonWriter {
-    fn setup(isolate: bool) -> Self {
+#[derive(Subcommand, Debug)]
+enum RegistryCmd {
+    /// List every registered program straight from the sequencer.
+    List {
+        /// Registry program id; default: deployment recorded as `lezer_registry`.
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Register a deployed program in the registry via its RegisterSelf chained call.
+    Register {
+        /// Deployed program name (e.g. `lezer_testimonial`, `lezer_token`).
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "")]
+        source_url: String,
+        #[arg(long, default_value = "")]
+        commit: String,
+        #[arg(long, default_value = "")]
+        version: String,
+        #[arg(long, default_value = "main")]
+        payer: String,
+        /// Registry program id; default: deployment recorded as `lezer_registry`.
+        #[arg(long)]
+        program: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TokenCmd {
+    /// Define a new token. `--definition` is a fresh public account you own; its id becomes the token id.
+    Define {
+        /// Fresh public account that hosts the definition shard.
+        #[arg(long)]
+        definition: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        symbol: String,
+        #[arg(long, default_value_t = 9)]
+        decimals: u8,
+        #[arg(long)]
+        supply: u128,
+        /// Mint authority; omit for a fixed-supply token (supply minted to the definition account).
+        #[arg(long)]
+        authority: Option<String>,
+        #[arg(long, default_value = "main")]
+        payer: String,
+        /// lezer_token program id; default: deployment recorded by `lezer program deploy`.
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Read a token definition from chain.
+    Info {
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Token balance of an account (label or Public/.. id).
+    Balance {
+        #[arg(long)]
+        token: String,
+        #[arg(long, default_value = "main")]
+        owner: String,
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Mint to an owner's holding; the mint authority signs.
+    Mint {
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        authority: String,
+        /// Owner that receives the minted amount (label or Public/..).
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        amount: u128,
+        #[arg(long, default_value = "main")]
+        payer: String,
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Transfer tokens between owners; the sender signs.
+    Transfer {
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        amount: u128,
+        #[arg(long, default_value = "main")]
+        payer: String,
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Burn tokens the caller owns.
+    Burn {
+        #[arg(long)]
+        token: String,
+        #[arg(long, default_value = "main")]
+        from: String,
+        #[arg(long)]
+        amount: u128,
+        #[arg(long, default_value = "main")]
+        payer: String,
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Rotate the mint authority; `none` renounces it permanently.
+    SetAuthority {
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        authority: String,
+        /// New authority account, or `none`.
+        #[arg(long)]
+        new: String,
+        #[arg(long, default_value = "main")]
+        payer: String,
+        #[arg(long)]
+        program: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TestimonialCmd {
+    /// Publish a testimonial (public, permanent, linked to the author account).
+    Submit {
+        #[arg(long)]
+        author: String,
+        /// Account that pays the fee (default: the author).
+        #[arg(long)]
+        payer: Option<String>,
+        #[arg(long, default_value = "")]
+        username: String,
+        #[arg(long)]
+        text: String,
+        /// Testimonial program id; default: $LEZER_TESTIMONIAL_PROGRAM.
+        #[arg(long)]
+        program: Option<String>,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+enum Kind {
+    Public,
+    Private,
+}
+
+impl From<Kind> for AccountKind {
+    fn from(k: Kind) -> Self {
+        match k {
+            Kind::Public => Self::Public,
+            Kind::Private => Self::Private,
+        }
+    }
+}
+
+/// Writes results to the original stdout after fd 1 was redirected to stderr.
+struct Output {
+    out: Box<dyn std::io::Write>,
+    json: bool,
+}
+
+impl Output {
+    fn setup(json: bool) -> Self {
         #[cfg(unix)]
         {
-            if isolate {
-                use std::os::fd::FromRawFd;
-                let dup_fd = unsafe { libc::dup(1) };
-                if dup_fd >= 0 {
-                    unsafe {
-                        libc::dup2(2, 1);
+            use std::os::fd::FromRawFd as _;
+            // SAFETY: plain fd duplication; the duplicated fd is owned by the File below.
+            let saved = unsafe { libc::dup(1) };
+            if saved >= 0 && unsafe { libc::dup2(2, 1) } >= 0 {
+                let file = unsafe { std::fs::File::from_raw_fd(saved) };
+                return Self { out: Box::new(file), json };
+            }
+        }
+        Self { out: Box::new(std::io::stdout()), json }
+    }
+
+    fn emit(&mut self, human: &str, value: &Value) {
+        let text = if self.json { serde_json::to_string_pretty(value).unwrap_or_default() } else { human.to_string() };
+        let _ = writeln!(self.out, "{text}");
+        let _ = self.out.flush();
+    }
+}
+
+fn password(prompt: &str) -> LezerResult<Zeroizing<String>> {
+    if let Ok(p) = std::env::var("LEZER_PASSWORD") {
+        return Ok(Zeroizing::new(p));
+    }
+    rpassword::prompt_password(prompt)
+        .map(Zeroizing::new)
+        .map_err(|e| LezerError::new(ErrorCode::InvalidPassword, format!("cannot read password: {e} (set LEZER_PASSWORD for non-interactive use)")))
+}
+
+/// Read a secret from stdin (piped) or a hidden prompt; whitespace is normalized.
+fn read_secret(prompt: &str) -> LezerResult<Zeroizing<String>> {
+    use std::io::IsTerminal as _;
+    let raw = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(prompt)
+    } else {
+        std::io::read_to_string(std::io::stdin())
+    };
+    raw.map(|p| Zeroizing::new(p.split_whitespace().collect::<Vec<_>>().join(" ")))
+        .map_err(|e| LezerError::new(ErrorCode::InvalidMnemonic, e.to_string()))
+}
+
+fn profile(network: Option<&str>) -> LezerResult<Option<NetworkProfile>> {
+    network
+        .map(|n| NetworkProfile::resolve(Some(n)))
+        .transpose()
+        .map_err(|e| LezerError::new(ErrorCode::DisallowedEndpointBlocked, e.to_string()))
+}
+
+fn no_program() -> LezerError {
+    LezerError::new(
+        ErrorCode::ProgramNotDeployed,
+        "no testimonial program configured for this network (pass --program or set LEZER_TESTIMONIAL_PROGRAM)",
+    )
+}
+
+fn no_registry() -> LezerError {
+    LezerError::new(
+        ErrorCode::ProgramNotDeployed,
+        "no lezer_registry program deployed from this wallet (run `lezer program deploy lezer_registry.bin` or pass --program)",
+    )
+}
+
+fn no_token_program() -> LezerError {
+    LezerError::new(
+        ErrorCode::ProgramNotDeployed,
+        "no lezer_token program deployed from this wallet (run `lezer program deploy lezer_token.bin` or pass --program)",
+    )
+}
+
+fn unlock(w: &mut WalletEngine) -> LezerResult<()> {
+    w.unlock(&password("Wallet password: ")?)
+}
+
+async fn run(cli: Cli, out: &mut Output) -> LezerResult<()> {
+    let home = cli.home.clone().unwrap_or_else(default_lezer_home);
+    let net = profile(cli.network.as_deref())?;
+
+    if let Command::Network = cli.command {
+        let p = net.unwrap_or_else(NetworkProfile::from_env);
+        let rpc = LezRpcClient::new(p.clone()).map_err(|e| LezerError::new(ErrorCode::DisallowedEndpointBlocked, e.to_string()))?;
+        let block = rpc.get_last_block_id().await.map_err(|e| LezerError::new(ErrorCode::SequencerUnreachable, e.to_string()))?;
+        let programs = rpc.get_program_ids().await.unwrap_or_default();
+        let expected = lezer_adapter::program_id_words_to_hex(&lezer_adapter::privacy_circuit_id());
+        let remote = programs.get("privacy_preserving_circuit").map(lezer_adapter::program_id_words_to_hex);
+        let compatible = remote.as_deref() == Some(expected.as_str());
+        let v = json!({ "sequencer_url": p.sequencer_url, "last_block_id": block, "privacy_circuit_matches": compatible, "remote_privacy_circuit": remote, "local_privacy_circuit": expected });
+        out.emit(
+            &format!(
+                "{}  block #{block}  privacy circuit {}",
+                p.sequencer_url,
+                if compatible { "matches (compatible)" } else { "DIFFERS — wallet and network versions are incompatible for private transfers" }
+            ),
+            &v,
+        );
+        return Ok(());
+    }
+
+    if let Command::VerifyAdoption { program } = &cli.command {
+        let p = net
+            .or_else(|| WalletEngine::configured_network(&home))
+            .unwrap_or_else(NetworkProfile::from_env);
+        let program = program
+            .clone()
+            .or_else(|| WalletEngine::stored_deployment(&home, "lezer_testimonial"))
+            .or_else(|| p.deployments.testimonial.clone())
+            .ok_or_else(no_program)?;
+        let r = lezer_adapter::verify_adoption(&p, &program).await.map_err(|e| LezerError::new(ErrorCode::SequencerUnreachable, format!("{e:#}")))?;
+        let mut human = format!(
+            "Program {} on {} (block #{})\n{} testimonials from {} distinct authors ({} index pages read)\n",
+            r.program_id, r.sequencer_url, r.last_block_id, r.total_testimonials, r.distinct_authors, r.index_pages_read
+        );
+        for t in &r.testimonials {
+            human.push_str(&format!("\n  {}  {}\n    {}\n", t.author, t.username, t.text));
+        }
+        out.emit(&human, &serde_json::to_value(&r).unwrap_or_default());
+        return Ok(());
+    }
+    if let Command::Program { sub: ProgramCmd::ImageId { elf } } = &cli.command {
+        let bytes = std::fs::read(elf).map_err(|e| LezerError::new(ErrorCode::TransactionRejected, e.to_string()))?;
+        let id = lezer_adapter::image_id_hex(&bytes).map_err(|e| LezerError::new(ErrorCode::TransactionRejected, e.to_string()))?;
+        out.emit(&id, &json!({ "image_id": id }));
+        return Ok(());
+    }
+
+    let mut w = WalletEngine::new(&home, net);
+    match cli.command {
+        Command::Network | Command::VerifyAdoption { .. } => unreachable!(),
+        Command::Program { sub } => {
+            unlock(&mut w)?;
+            let ProgramCmd::Deploy { elf, payer } = sub else { unreachable!() };
+            let bytes = std::fs::read(&elf).map_err(|e| LezerError::new(ErrorCode::TransactionRejected, format!("{}: {e}", elf.display())))?;
+            let stem = elf.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let d = w.deploy_program(&bytes, &payer, stem).await?;
+            out.emit(
+                &format!("Deployed program {}\n  image id {}\n  {} segment(s), {} bytes", d.program_id, d.image_id, d.segments.len(), d.elf_bytes),
+                &serde_json::to_value(&d).unwrap_or_default(),
+            );
+        }
+        Command::Registry { sub } => {
+            match sub {
+                RegistryCmd::List { program } => {
+                    let program = program.or_else(|| w.registry_program()).or_else(|| WalletEngine::stored_deployment(&home, "lezer_registry")).ok_or_else(no_registry)?;
+                    let r = w.list_registry(&program).await?;
+                    let mut human = format!("Registry {} on {} (block #{})\n{} programs ({} index pages read)\n", r.registry_program_id, r.sequencer_url, r.last_block_id, r.total_programs, r.index_pages_read);
+                    for e in &r.entries {
+                        human.push_str(&format!("\n  {}  {} v{}\n    {} @{}\n", e.program_id, e.name, e.version, e.source_url, e.commit));
                     }
-                    let file = unsafe { std::fs::File::from_raw_fd(dup_fd) };
-                    return Self { file: Some(file) };
+                    out.emit(&human, &serde_json::to_value(&r).unwrap_or_default());
+                }
+                RegistryCmd::Register { subject, name, source_url, commit, version, payer, program } => {
+                    unlock(&mut w)?;
+                    let program = program.or_else(|| w.registry_program()).ok_or_else(no_registry)?;
+                    let r = w.register_program(&program, &subject, &name, &source_url, &commit, &version, &payer).await?;
+                    emit_receipt(out, "Registry self-registration", &r);
                 }
             }
-            Self { file: None }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = isolate;
-            Self {}
+        Command::Token { sub } => {
+            unlock(&mut w)?;
+            let resolve = |program: Option<String>| -> LezerResult<String> {
+                program.or_else(|| w.token_program()).ok_or_else(no_token_program)
+            };
+            match sub {
+                TokenCmd::Define { definition, name, symbol, decimals, supply, authority, payer, program } => {
+                    let program = resolve(program)?;
+                    let info = w.token_define(&program, &definition, &payer, &name, &symbol, decimals, authority.as_deref(), supply).await?;
+                    out.emit(
+                        &format!("Token defined: {} {}
+  token id {}
+  supply {}  authority {}", info.symbol, info.name, info.token_id, info.total_supply, info.authority.as_deref().unwrap_or("renounced (fixed supply)")),
+                        &serde_json::to_value(&info).unwrap_or_default(),
+                    );
+                }
+                TokenCmd::Info { token, program } => {
+                    let program = resolve(program)?;
+                    let info = w.token_info(&program, &token).await?;
+                    out.emit(
+                        &format!("{} ({})
+  token id {}
+  decimals {}  supply {}
+  authority {}", info.name, info.symbol, info.token_id, info.decimals, info.total_supply, info.authority.as_deref().unwrap_or("renounced")),
+                        &serde_json::to_value(&info).unwrap_or_default(),
+                    );
+                }
+                TokenCmd::Balance { token, owner, program } => {
+                    let program = resolve(program)?;
+                    let b = w.token_balance(&program, &token, &owner).await?;
+                    out.emit(&format!("{owner} holds {b}"), &json!({ "owner": owner, "balance": b.to_string() }));
+                }
+                TokenCmd::Mint { token, authority, to, amount, payer, program } => {
+                    let program = resolve(program)?;
+                    let r = w.token_mint(&program, &token, &authority, &to, &payer, amount).await?;
+                    emit_receipt(out, "Mint", &r);
+                }
+                TokenCmd::Transfer { token, from, to, amount, payer, program } => {
+                    let program = resolve(program)?;
+                    let r = w.token_transfer(&program, &token, &from, &to, &payer, amount).await?;
+                    emit_receipt(out, "Token transfer", &r);
+                }
+                TokenCmd::Burn { token, from, amount, payer, program } => {
+                    let program = resolve(program)?;
+                    let r = w.token_burn(&program, &token, &from, &payer, amount).await?;
+                    emit_receipt(out, "Burn", &r);
+                }
+                TokenCmd::SetAuthority { token, authority, new, payer, program } => {
+                    let program = resolve(program)?;
+                    let new_auth = (new != "none").then_some(new.as_str());
+                    let r = w.token_set_authority(&program, &token, &authority, &payer, new_auth).await?;
+                    emit_receipt(out, "Authority change", &r);
+                }
+            }
+        }
+        Command::Testimonial { sub: TestimonialCmd::Submit { author, payer, username, text, program } } => {
+            unlock(&mut w)?;
+            let program = program.or_else(|| w.testimonial_program()).ok_or_else(no_program)?;
+            let payer = payer.unwrap_or_else(|| author.clone());
+            let r = w.submit_testimonial(&program, &author, &payer, &username, &text).await?;
+            let human = match &r.status {
+                TxStatus::Included { block_id } => format!("Testimonial published in block #{block_id}\n  tx {}", r.tx_hash),
+                TxStatus::Submitted { detail } => format!("Testimonial submitted but not yet included\n  tx {}\n  {detail}", r.tx_hash),
+            };
+            out.emit(&human, &serde_json::to_value(&r).unwrap_or_default());
+        }
+        Command::Init => {
+            let pw = password("New wallet password (min 8 chars): ")?;
+            let res = w.init(&pw)?;
+            let phrase = res.recovery_phrase.clone().unwrap_or_default();
+            let accounts: Vec<String> = res.accounts.iter().map(|a| format!("  {} {}", a.account_id, a.labels.join(","))).collect();
+            out.emit(
+                &format!(
+                    "Wallet created at {}\nNetwork: {}\n\nRECOVERY PHRASE (write it down; it will not be shown again):\n\n  {phrase}\n\nAccounts:\n{}",
+                    res.vault_path, res.network_id, accounts.join("\n")
+                ),
+                &serde_json::to_value(&res).unwrap_or_default(),
+            );
+        }
+        Command::Restore { discover_depth } => {
+            let phrase = read_secret("Recovery phrase: ")?;
+            let pw = password("New wallet password (min 8 chars): ")?;
+            let res = w.restore(&phrase, &pw, discover_depth).await?;
+            let accounts: Vec<String> = res.accounts.iter().map(|a| format!("  {} {}", a.account_id, a.labels.join(","))).collect();
+            out.emit(&format!("Wallet restored at {}\nAccounts:\n{}", res.vault_path, accounts.join("\n")), &serde_json::to_value(&res).unwrap_or_default());
+        }
+        Command::Status => {
+            unlock(&mut w)?;
+            let chain = w.chain_status().await?;
+            let snap = w.snapshot();
+            let human = format!(
+                "Network {} ({})  reachable={} block={}\nAccounts: {}  Sessions: {}  Recent txs: {}",
+                snap.network_id,
+                chain.sequencer_url,
+                chain.reachable,
+                chain.last_block_id.map_or("?".into(), |b| b.to_string()),
+                snap.accounts.len(),
+                snap.active_sessions.len(),
+                snap.recent_activity.len()
+            );
+            out.emit(&human, &json!({ "chain": chain, "snapshot": snap }));
+        }
+        Command::Account { sub } => {
+            unlock(&mut w)?;
+            match sub {
+                AccountCmd::New { kind, label } => {
+                    let a = w.create_account(kind.into(), label.as_deref())?;
+                    out.emit(&format!("Created {} {}", a.account_id, a.labels.join(",")), &serde_json::to_value(&a).unwrap_or_default());
+                }
+                AccountCmd::List => {
+                    let accts = w.accounts()?;
+                    let lines: Vec<String> = accts
+                        .iter()
+                        .map(|a| {
+                            let name = a.received_via.as_ref().map_or_else(|| a.labels.join(","), |v| format!("{v} (received)"));
+                            format!("{:<8} {} {name}", format!("{:?}", a.kind).to_lowercase(), a.account_id)
+                        })
+                        .collect();
+                    out.emit(&lines.join("\n"), &serde_json::to_value(&accts).unwrap_or_default());
+                }
+                AccountCmd::Import { label } => {
+                    let key = read_secret("Public account private key (hex): ")?;
+                    let a = w.import_public_key(&key, label.as_deref())?;
+                    out.emit(&format!("Imported {} {}", a.account_id, a.labels.join(",")), &serde_json::to_value(&a).unwrap_or_default());
+                }
+                AccountCmd::Label { account, label } => {
+                    let id = w.resolve_account(&account)?;
+                    w.create_label(&id, &label)?;
+                    out.emit(&format!("Labeled {id} as {label}"), &json!({ "account_id": id, "label": label }));
+                }
+                AccountCmd::Receive { account } => {
+                    let k = w.receive_keys(&account)?;
+                    out.emit(&format!("{}\n\n{}", k.account_id, k.receive_address), &serde_json::to_value(&k).unwrap_or_default());
+                }
+                AccountCmd::Use { account } => {
+                    let id = w.set_active_account(&account)?;
+                    out.emit(&format!("Active account: {id}"), &json!({ "active_account_id": id }));
+                }
+            }
+        }
+        Command::Balance { account } => {
+            unlock(&mut w)?;
+            let b = w.balance(&account).await?;
+            let note = match b.source.as_str() {
+                "cached" => " (offline — cached)",
+                "local" => " (private — run `lezer sync` to include new incoming notes)",
+                _ => "",
+            };
+            out.emit(&format!("{} {}{note}", b.account_id, b.balance), &serde_json::to_value(&b).unwrap_or_default());
+        }
+        Command::Sync => {
+            unlock(&mut w)?;
+            let block = w.sync().await?;
+            out.emit(&format!("Synced to block #{block}"), &json!({ "synced_block": block }));
+        }
+        Command::Send { from, to, amount } => {
+            unlock(&mut w)?;
+            let r = w.transfer(&from, &to, amount).await?;
+            let mut v = serde_json::to_value(&r).unwrap_or_default();
+            v["peak_rss_mib"] = json!(peak_rss_bytes() as f64 / 1_048_576.0);
+            let human = match &r.status {
+                TxStatus::Included { block_id } => format!(
+                    "{:?} transfer included in block #{block_id}\n  tx {}\n  build {} ms, inclusion {} ms",
+                    r.mode,
+                    r.tx_hash,
+                    r.build_ms,
+                    r.inclusion_ms.unwrap_or_default()
+                ),
+                TxStatus::Submitted { detail } => {
+                    format!("{:?} transfer submitted but not yet included\n  tx {}\n  {detail}", r.mode, r.tx_hash)
+                }
+            };
+            out.emit(&human, &v);
         }
     }
-
-    fn write_json(&mut self, value: &Value) {
-        let formatted = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string());
-        #[cfg(unix)]
-        if let Some(ref mut f) = self.file {
-            let _ = writeln!(f, "{formatted}");
-            let _ = f.flush();
-            return;
-        }
-        println!("{formatted}");
-    }
+    Ok(())
 }
 
-fn resolve_password(cli_password: Option<String>) -> String {
-    cli_password
-        .or_else(|| std::env::var("LEZER_PASSWORD").ok())
-        .unwrap_or_default()
-}
-
-fn resolve_vault_path(cli_vault: Option<PathBuf>) -> PathBuf {
-    cli_vault.unwrap_or_else(|| default_lezer_home().join("vault.enc"))
+fn emit_receipt(out: &mut Output, what: &str, r: &TxReceipt) {
+    let human = match &r.status {
+        TxStatus::Included { block_id } => format!("{what} included in block #{block_id}\n  tx {}", r.tx_hash),
+        TxStatus::Submitted { detail } => format!("{what} submitted but not yet included\n  tx {}\n  {detail}", r.tx_hash),
+    };
+    out.emit(&human, &serde_json::to_value(r).unwrap_or_default());
 }
 
 fn main() {
+    // Silence upstream `wallet`'s verbose tx dumps (they include signatures + full
+    // instruction data). Not secrets, but they bury the actual output.
+    // SAFETY: set before tokio spawns worker threads; upstream only reads it.
+    unsafe { std::env::set_var("SUPPRESS_VERBOSE_PRINTS", "1") };
     let cli = Cli::parse();
-    let mut out_writer = IsolatedJsonWriter::setup(cli.json);
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-
-    let vault_path = resolve_vault_path(cli.vault);
-    let password = resolve_password(cli.password);
-    let zone = cli.zone;
-
-    let result: Result<Value, LezerError> = rt.block_on(async move {
-        if let Commands::Spikes = cli.command {
-            let adapter = LezAdapter::from_env().map_err(|e| {
-                LezerError::new(lezer_core::ErrorCode::SequencerUnreachable, e.to_string())
-            })?;
-            let s02 = adapter.run_spike_s02().await.map_err(|e| {
-                LezerError::new(lezer_core::ErrorCode::SequencerUnreachable, e.to_string())
-            })?;
-            let s01 = adapter.run_spike_s01().await.map_err(|e| {
-                LezerError::new(lezer_core::ErrorCode::SequencerUnreachable, e.to_string())
-            })?;
-            return Ok(json!({
-                "spike_s01_private_proof_benchmark": s01,
-                "spike_s02_sequencer_compatibility": s02,
-            }));
-        }
-
-        let mut engine = WalletEngine::with_vault_and_zone(vault_path, zone.as_deref())?;
-        match cli.command {
-            Commands::Init => commands::vault::handle_init(&mut engine, &password),
-            Commands::Restore { mnemonic } => {
-                commands::vault::handle_restore(&mut engine, &mnemonic, &password)
-            }
-            Commands::Unlock => commands::vault::handle_unlock(&mut engine, &password),
-            Commands::Lock => commands::vault::handle_lock(&mut engine),
-            Commands::Status => commands::vault::handle_status(&engine),
-            Commands::Account { sub } => {
-                commands::account::handle_account_subcommand(&mut engine, &password, sub)
-            }
-            Commands::Balance { account } => {
-                commands::account::handle_balance(&mut engine, &password, &account).await
-            }
-            Commands::Transfer { from, to, amount } => {
-                commands::transfer::handle_transfer(&mut engine, &password, &from, &to, amount)
-                    .await
-            }
-            Commands::Faucet { sub } => {
-                commands::faucet::handle_faucet_subcommand(&mut engine, &password, sub).await
-            }
-            Commands::Token { sub } => {
-                commands::token::handle_token_subcommand(&mut engine, &password, sub)
-            }
-            Commands::Testimonial { sub } => {
-                commands::testimonial::handle_testimonial_subcommand(&mut engine, &password, sub)
-            }
-            Commands::Registry { sub } => {
-                let reg_path = engine
-                    .vault_path()
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join("registry.json");
-                commands::registry::handle_registry_subcommand(&reg_path, sub)
-            }
-            Commands::Backup { sub } => {
-                let mirror_path = engine
-                    .vault_path()
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join("storage_mirror.json");
-                commands::vault::handle_backup_subcommand(engine.vault_path(), &mirror_path, sub)
-            }
-            Commands::VerifyAdoption {
-                submission_id,
-                sequencer,
-            } => {
-                let seq_url = sequencer
-                    .unwrap_or_else(|| engine.profile().sequencer_url.clone());
-                commands::verify_adoption::handle_verify_adoption(
-                    engine.testimonial_ledger_path(),
-                    &submission_id,
-                    &seq_url,
-                )
-            }
-            Commands::Spikes => unreachable!(),
-        }
-    });
-
-    match result {
-        Ok(val) => {
-            out_writer.write_json(&val);
-        }
-        Err(err) => {
-            let envelope = json!({
-                "error": err.to_envelope()
-            });
-            out_writer.write_json(&envelope);
-            std::process::exit(1);
-        }
+    let mut out = Output::setup(cli.json);
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+    if let Err(err) = rt.block_on(run(cli, &mut out)) {
+        let env = err.to_envelope();
+        out.emit(&format!("error {}: {}", env.code, env.message), &json!({ "error": env }));
+        std::process::exit(1);
     }
 }

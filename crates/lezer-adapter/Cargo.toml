@@ -9,38 +9,35 @@ license.workspace = true
 workspace = true
 
 [features]
-default = ["upstream-lez"]
-upstream-lez = [
-    "dep:wallet",
-    "dep:lee",
-    "dep:lee_core",
-    "dep:sequencer_service_rpc",
-    "dep:system_accounts",
-    "dep:programs",
-]
-keycard = ["upstream-lez", "wallet/keycard"]
+# In-process RISC Zero proving (as the official wallet-ffi does), so no separately
+# installed `r0vm` is needed. On macOS this compiles Metal kernels and requires the
+# Metal toolchain. Without it, proving uses the `r0vm` binary installed by `rzup`.
+prove = ["lee/prove"]
 
 [dependencies]
 anyhow.workspace = true
-base64.workspace = true
 bip39.workspace = true
 borsh.workspace = true
 bs58.workspace = true
-ed25519-dalek.workspace = true
 hex.workspace = true
+libc.workspace = true
+rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 zeroize.workspace = true
 
-wallet = { workspace = true, optional = true }
-lee = { workspace = true, optional = true }
-lee_core = { workspace = true, optional = true }
-sequencer_service_rpc = { workspace = true, optional = true }
-system_accounts = { workspace = true, optional = true }
-programs = { workspace = true, optional = true }
+url = "2"
+wallet.workspace = true
+lee.workspace = true
+lee_core.workspace = true
+common.workspace = true
+key_protocol.workspace = true
+sequencer_service_rpc.workspace = true
+risc0-binfmt = "3.0.2"
+testimonial_core = { path = "../../programs/testimonial/core" }
+token_core = { path = "../../programs/token/core" }
+registry_core = { path = "../../programs/registry/core" }

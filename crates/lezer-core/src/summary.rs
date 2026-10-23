@@ -1,46 +1,33 @@
-//! Canonical `TransactionSummary` builder, 4-state LP-0023 `SourceVerificationBadge`,
-//! and security warning gates (`crates/lezer-core/src/summary.rs`).
-//!
-//! Enforces the 5-Step Immutable Transaction & Approval Pipeline (`docs/08` §2.2):
-//! - Computes `summary_digest_sha256` (`SHA-256` over canonical `TransactionSummary` + `TxIntent`).
-//! - Attaches the 4-state `SourceVerificationBadge` (`VerifiedSource`, `KnownButUnverified`,
-//!   `NoRegistryEntry`, `MismatchOrError`).
-//! - Attaches mandatory gates (`WARN_PUBLIC_LINKABILITY`, `WARN_AUTHORITY_OR_UNLIMITED_GRANT`,
-//!   `WARN_UNVERIFIED_PROGRAM`).
+//! Canonical `TransactionSummary` (what the user approves) and the `ApproveDecision` the UI
+//! returns. The digest binds every displayed field; the UI cannot alter what gets signed.
 
-use std::collections::BTreeMap;
-
-use lezer_adapter::{ComputeEstimate, SimulatedBalanceDelta, SimulationOutcome};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-/// 4-state LP-0023 Source Verification Status (`docs/04` §3.3 & `docs/08` §2.2).
+/// Program provenance shown on the approval sheet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationBadgeState {
+    /// Built into the LEZ protocol (e.g. native token); shipped with the node.
+    ProtocolBuiltin,
+    /// LP-0023 registry entry exists and a reproducible rebuild matches the deployed ID.
     VerifiedSource,
+    /// Registry entry / IDL exists, but source has not been verified.
     KnownButUnverified,
+    /// No registry entry — requires explicit acknowledgement.
     NoRegistryEntry,
+    /// Rebuild contradicts the deployed ID — blocked unless critically overridden.
     MismatchOrError,
 }
 
-/// Rich LP-0023 verification badge attached to every `TransactionSummary`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceVerificationBadge {
     pub state: VerificationBadgeState,
     pub label: String,
     pub program_name: String,
-    pub program_version: Option<String>,
-    pub program_id_hex: String,
-    pub repo_url: Option<String>,
-    pub commit_hash: Option<String>,
-    pub idl_cid: Option<String>,
-    pub source_cid: Option<String>,
-    pub requires_unverified_acknowledgement: bool,
-    pub blocked_by_mismatch: bool,
+    pub program_id: String,
 }
 
-/// Severity of a security warning on the Approval Sheet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WarningSeverity {
@@ -49,7 +36,6 @@ pub enum WarningSeverity {
     CriticalRedOverride,
 }
 
-/// High-visibility security or privacy notice rendered in `ApprovalSheet.qml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityWarning {
     pub code: String,
@@ -58,78 +44,63 @@ pub struct SecurityWarning {
     pub message: String,
 }
 
-/// Canonical `TransactionSummary` rendered by stateless UI layers (`ApprovalSheet.qml`).
+/// Result of checking the sender can cover the amount before asking the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum Precheck {
+    Passed { available: String },
+    InsufficientFunds { available: String, required: String },
+    /// Balance could not be read (e.g. offline). Approval is still possible; the network
+    /// will reject the transaction if funds are insufficient.
+    Unavailable { reason: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionSummary {
     pub proposal_id: String,
     pub originating_dapp: String,
     pub signing_account: String,
+    /// `public`, `shielded`, `deshielded`, or `private`.
     pub privacy_mode: String,
-    pub program_id_hex: String,
-    pub program_name: String,
+    pub requires_zk_proof: bool,
     pub instruction_name: String,
-    /// Human-readable one-line headline, e.g. `"Transfer 250 LEZERUSD from alice to bob (ATA)"`.
     pub headline: String,
-    /// Pre-flight simulation outcome & balance deltas.
-    pub simulation: SimulationOutcome,
-    /// Explicit balance outflows/inflows.
-    pub balance_deltas: Vec<SimulatedBalanceDelta>,
-    /// Authority or approval mutations (e.g. `SetAuthority`, `Mint`).
-    pub authority_changes: Vec<String>,
-    /// Decoded key-value instruction arguments.
-    pub decoded_args: BTreeMap<String, String>,
-    /// 4-state LP-0023 Source Verification Badge.
+    pub from: String,
+    pub to: String,
+    pub amount: String,
+    /// Upper bound on the fee the sender may be charged (public transactions).
+    pub max_fee: Option<String>,
+    pub precheck: Precheck,
     pub verification_badge: SourceVerificationBadge,
-    /// Estimated RISC0 execution cycles and fee.
-    pub compute_estimate: ComputeEstimate,
-    /// High-visibility security and privacy warnings.
     pub warnings: Vec<SecurityWarning>,
-    /// Whether signing requires `acknowledged_unverified == true` in `ApproveDecision`.
     pub requires_unverified_ack: bool,
-    /// Whether signing requires `critical_override == true` in `ApproveDecision` (Red Override Gate).
     pub requires_critical_override: bool,
-    /// Raw hex fallback of instruction data.
-    pub raw_instruction_hex: String,
-    /// Canonical SHA-256 hex digest over `(proposal_id, signing_account, headline, decoded_args, raw_instruction_hex)`.
+    /// SHA-256 over the canonical JSON of every field above.
     pub summary_digest_hex: String,
 }
 
 impl TransactionSummary {
-    /// Compute the deterministic `summary_digest_hex` (`SHA-256`) binding the previewed
-    /// summary to the underlying unsigned intent.
-    pub fn compute_digest_hex(
-        proposal_id: &str,
-        signing_account: &str,
-        program_id_hex: &str,
-        instruction_name: &str,
-        headline: &str,
-        decoded_args: &BTreeMap<String, String>,
-        raw_instruction_hex: &str,
-    ) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(b"lezer-tx-summary-digest-v1:");
-        hasher.update(proposal_id.as_bytes());
-        hasher.update(b"|");
-        hasher.update(signing_account.as_bytes());
-        hasher.update(b"|");
-        hasher.update(program_id_hex.as_bytes());
-        hasher.update(b"|");
-        hasher.update(instruction_name.as_bytes());
-        hasher.update(b"|");
-        hasher.update(headline.as_bytes());
-        hasher.update(b"|");
-        for (k, v) in decoded_args {
-            hasher.update(k.as_bytes());
-            hasher.update(b"=");
-            hasher.update(v.as_bytes());
-            hasher.update(b";");
-        }
-        hasher.update(raw_instruction_hex.as_bytes());
-        hex::encode(hasher.finalize())
+    /// Compute and set `summary_digest_hex` from all other fields.
+    pub fn seal_digest(mut self) -> Self {
+        self.summary_digest_hex = String::new();
+        let canonical = serde_json::to_vec(&self).expect("summary serializes");
+        let mut h = Sha256::new();
+        h.update(b"lezer-tx-summary-v2:");
+        h.update(&canonical);
+        self.summary_digest_hex = hex::encode(h.finalize());
+        self
+    }
+
+    pub fn digest_is_valid(&self) -> bool {
+        self.clone().seal_digest().summary_digest_hex == self.summary_digest_hex
+    }
+
+    pub fn blocks_approval(&self) -> bool {
+        matches!(self.precheck, Precheck::InsufficientFunds { .. })
     }
 }
 
-/// Small decision object returned by `ApprovalSheet.qml` / CLI when the user clicks Approve.
+/// Returned by the approval UI / CLI. Carries no transaction data, only the decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproveDecision {
     pub proposal_id: String,

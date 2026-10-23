@@ -1,6 +1,6 @@
 [package]
 name = "lezer-cli"
-description = "Lezer Wallet Command-Line Interface (`lezer`) — vault lifecycle, accounts, transfers, tokens, faucet, registry, and adoption verifier"
+description = "Lezer Wallet command-line interface (`lezer`)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,12 +15,14 @@ workspace = true
 [dependencies]
 lezer-core = { path = "../lezer-core" }
 lezer-adapter = { path = "../lezer-adapter" }
-anyhow.workspace = true
 clap.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
+rpassword = "7"
+zeroize.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+tempfile.workspace = true

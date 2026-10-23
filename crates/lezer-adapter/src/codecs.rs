@@ -67,7 +67,7 @@ mod tests {
         let decoded = risc0_u32_words_to_bytes(&words);
         assert_eq!(&decoded[..original.len()], original);
 
-        let hex_id = "be6cd0c3c15e6d6236cadf3af0eb63332473f223c0713256f7a5b83e0fac2cf5";
+        let hex_id = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
         let parsed = program_id_words_from_hex(hex_id).unwrap();
         assert_eq!(program_id_words_to_hex(&parsed), hex_id);
     }

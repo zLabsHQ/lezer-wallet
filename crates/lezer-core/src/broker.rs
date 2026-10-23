@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
-use crate::decoder::{TxIntent, decode_and_summarize_intent};
+use crate::intent::{TxIntent, summarize};
 use crate::errors::{ErrorCode, LezerError, LezerResult};
-use crate::summary::{ApproveDecision, TransactionSummary};
+use crate::summary::{ApproveDecision, Precheck, TransactionSummary};
 use crate::vault::{PermissionScope, SessionGrant};
 
 /// Default dApp session TTL: 24 hours (86,400 seconds).
@@ -197,10 +197,22 @@ impl ApprovalBroker {
         &mut self,
         session: &SessionGrant,
         intent: TxIntent,
-        available_balance: u128,
-        offline: bool,
+        precheck: Precheck,
+        testimonial_program: Option<&str>,
         now_unix: u64,
     ) -> LezerResult<PendingProposal> {
+        if now_unix >= session.expires_at {
+            return Err(LezerError::new(ErrorCode::SessionExpiredOrInvalid, "session token has expired"));
+        }
+        match &intent {
+            TxIntent::NativeTransfer { .. } if intent.amount().is_none_or(|a| a == 0) => {
+                return Err(LezerError::new(ErrorCode::SimulationReverted, "amount must be a positive integer"));
+            }
+            TxIntent::SubmitTestimonial { .. } if testimonial_program.is_none() => {
+                return Err(LezerError::new(ErrorCode::ProgramNotDeployed, "the testimonial program is not deployed on this network"));
+            }
+            _ => {}
+        }
         let signing_account = intent.signing_account();
         let has_propose_scope = session.scopes.iter().any(|s| {
             matches!(
@@ -219,12 +231,14 @@ impl ApprovalBroker {
         }
 
         let proposal_id = self.allocate_request_id("prop");
-        let summary = decode_and_summarize_intent(
+        let summary = summarize(
             &proposal_id,
             &session.dapp_name,
             &intent,
-            available_balance,
-            offline,
+            precheck,
+            &lezer_adapter::native_token_program_id(),
+            Some(lezer_adapter::DEFAULT_MAX_FEE),
+            testimonial_program,
         );
 
         let proposal = PendingProposal {
@@ -265,7 +279,9 @@ impl ApprovalBroker {
                 )
             })?;
 
-        if decision.summary_digest_hex != proposal.summary.summary_digest_hex {
+        if decision.summary_digest_hex != proposal.summary.summary_digest_hex
+            || !proposal.summary.digest_is_valid()
+        {
             return Err(LezerError::new(
                 ErrorCode::ProposalDigestMismatch,
                 format!(
@@ -275,12 +291,10 @@ impl ApprovalBroker {
             ));
         }
 
-        if let lezer_adapter::SimulationOutcome::SimDeterministicRevert { reason, .. } =
-            &proposal.summary.simulation
-        {
+        if proposal.summary.blocks_approval() {
             return Err(LezerError::new(
                 ErrorCode::SimulationReverted,
-                format!("cannot approve transaction that failed simulation: {reason}"),
+                "cannot approve: sender balance does not cover the amount",
             ));
         }
 
@@ -315,6 +329,18 @@ impl ApprovalBroker {
                 request_id: proposal_id.to_string(),
                 tx_hash,
                 result,
+            },
+        );
+    }
+
+    /// Record that an approved proposal failed to execute.
+    pub fn record_proposal_failed(&mut self, proposal_id: &str, err: &LezerError) {
+        self.resolutions.insert(
+            proposal_id.to_string(),
+            RequestResolution::Rejected {
+                request_id: proposal_id.to_string(),
+                code: err.code.as_str().to_string(),
+                reason: err.message.clone(),
             },
         );
     }
@@ -436,8 +462,8 @@ mod tests {
                     to: pub_acct,
                     amount: "25".to_string(),
                 },
-                100,
-                false,
+                Precheck::Passed { available: "100".to_string() },
+                None,
                 1010,
             )
             .unwrap();

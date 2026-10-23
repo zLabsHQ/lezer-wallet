@@ -1,18 +1,18 @@
-//! `SealedVaultEnvelopeV1` (`~/.lezer/vault.enc`) — Encrypted key & authority storage.
+//! Encrypted vault (`~/.lezer/vault.enc`).
 //!
-//! - Uses `Argon2id` (default: 64 MiB memory, 3 iterations, 4 parallelism; configurable
-//!   in envelope header) + `XChaCha20-Poly1305` AEAD with a 192-bit (24-byte) random nonce.
-//! - Enforces crash-safe **write-temp-fsync-rename** atomic persistence (`vault.enc.tmp.<pid>`).
-//! - Separates critical key state (`vault.enc`) from rebuildable cache (`cache.json`).
+//! - Argon2id (64 MiB, 3 iterations, 4 lanes) derives a 256-bit key **once** per unlock;
+//!   the password itself is never retained. Re-sealing reuses the key with a fresh nonce.
+//! - XChaCha20-Poly1305 with a random 192-bit nonce; the header MAC is bound as AAD.
+//! - Crash-safe write-temp → fsync → rename, file mode 0600, directory 0700.
+//! - Payload (`WalletStateV2`) wraps the official upstream wallet storage (keys + private
+//!   account state) — which upstream itself keeps in plaintext — plus Lezer metadata.
 
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
-use bip39::Mnemonic;
 use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
@@ -20,29 +20,37 @@ use chacha20poly1305::{
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::errors::{ErrorCode, LezerError, LezerResult};
 
-/// Current canonical vault envelope schema version.
-pub const CURRENT_VAULT_SCHEMA_VERSION: u32 = 1;
+/// Payload schema version. v1 vaults were produced by pre-release builds whose keys were
+/// not LEZ-compatible and are rejected with a clear message.
+pub const CURRENT_VAULT_SCHEMA_VERSION: u32 = 2;
 
-/// On-disk encrypted vault envelope (`~/.lezer/vault.enc`).
+const KDF_MEMORY_KIB: u32 = if cfg!(test) { 8 * 1024 } else { 64 * 1024 };
+const KDF_ITERATIONS: u32 = 3;
+const KDF_LANES: u32 = 4;
+/// Lowest Argon2id memory cost accepted when opening a vault (guards against downgraded files).
+const KDF_MIN_MEMORY_KIB: u32 = if cfg!(test) { 8 * 1024 } else { 64 * 1024 };
+
+fn b64() -> base64::engine::GeneralPurpose {
+    base64::engine::general_purpose::STANDARD
+}
+
+fn corrupted(msg: impl Into<String>) -> LezerError {
+    LezerError::new(ErrorCode::VaultCorrupted, msg)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SealedVaultEnvelopeV1 {
-    /// Envelope schema version (1 for LP-0021).
     pub schema_version: u32,
-    /// KDF parameters used to derive the 256-bit wrapping key from the user's password.
     pub kdf: Argon2ParamsRecord,
-    /// 192-bit (24-byte) random nonce for XChaCha20-Poly1305, base64-encoded.
     pub nonce_b64: String,
-    /// Authenticated ciphertext of `CanonicalWalletStateV1`, base64-encoded.
     pub ciphertext_b64: String,
-    /// SHA-256 integrity fingerprint of the associated header metadata (`schema_version` + `kdf` + `nonce_b64`).
     pub header_mac_hex: String,
 }
 
-/// Argon2id parameters stored in the envelope header.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Argon2ParamsRecord {
     pub algorithm: String,
@@ -53,57 +61,60 @@ pub struct Argon2ParamsRecord {
 }
 
 impl Argon2ParamsRecord {
-    /// Production default parameters (`65536 KiB` = 64 MiB, `3` iterations, `4` lanes).
-    /// Can be overridden via `LEZER_KDF_MEMORY_KIB` in resource-constrained CI tests.
-    pub fn new_random_salt() -> Self {
+    fn new_random_salt() -> Self {
         let mut salt = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut salt);
-        let memory_kib = std::env::var("LEZER_KDF_MEMORY_KIB")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(65_536);
-        Self::with_salt(&salt, memory_kib, 3, 4)
-    }
-
-    pub fn with_salt(salt: &[u8; 32], memory_kib: u32, iterations: u32, parallelism: u32) -> Self {
         Self {
             algorithm: "argon2id".to_string(),
-            memory_kib,
-            iterations,
-            parallelism,
-            salt_b64: base64::engine::general_purpose::STANDARD.encode(salt),
+            memory_kib: KDF_MEMORY_KIB,
+            iterations: KDF_ITERATIONS,
+            parallelism: KDF_LANES,
+            salt_b64: b64().encode(salt),
         }
     }
 }
 
-/// Privacy classification of a wallet account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AccountPrivacy {
-    Public,
-    Private,
+/// Wrapping key held in memory while the vault is unlocked (zeroized on drop).
+pub struct VaultKey {
+    key: Zeroizing<[u8; 32]>,
+    kdf: Argon2ParamsRecord,
 }
 
-/// Extended account metadata stored inside `CanonicalWalletStateV1`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccountMetadataRecord {
-    /// Canonical account identifier (`"Public/<base58>"` or `"Private/<base58>"`).
-    pub account_id: String,
-    /// Human-readable label (e.g. `"Main Public"`, `"alice"`).
-    pub label: String,
-    /// Public vs. Private account type.
-    pub privacy: AccountPrivacy,
-    /// Deterministic derivation index on `m/44'/9999'/<privacy>'/0/i`.
-    pub derivation_index: u32,
-    /// Hex-encoded 32-byte public verifying key (`pk_pub`) or commitment.
-    pub public_key_hex: String,
-    /// Optional `lezer:priv1...` receive URI for private accounts.
-    pub receive_uri: Option<String>,
-    /// Unix timestamp of creation.
-    pub created_at: u64,
+impl std::fmt::Debug for VaultKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VaultKey([REDACTED])")
+    }
 }
 
-/// Permission scope granted to a connected dApp session.
+impl VaultKey {
+    /// Derive a key for a brand-new vault (fresh random salt).
+    pub fn derive_new(password: &str) -> LezerResult<Self> {
+        let kdf = Argon2ParamsRecord::new_random_salt();
+        Self::derive(password, kdf)
+    }
+
+    fn derive(password: &str, kdf: Argon2ParamsRecord) -> LezerResult<Self> {
+        if kdf.algorithm != "argon2id" {
+            return Err(corrupted(format!("unsupported KDF '{}'", kdf.algorithm)));
+        }
+        if kdf.memory_kib < KDF_MIN_MEMORY_KIB {
+            return Err(corrupted(format!(
+                "vault KDF memory cost {} KiB is below the required minimum {KDF_MIN_MEMORY_KIB} KiB",
+                kdf.memory_kib
+            )));
+        }
+        let salt = b64().decode(&kdf.salt_b64).map_err(|e| corrupted(format!("invalid KDF salt: {e}")))?;
+        let params = Params::new(kdf.memory_kib, kdf.iterations, kdf.parallelism, Some(32))
+            .map_err(|e| corrupted(format!("invalid Argon2id parameters: {e}")))?;
+        let mut key = Zeroizing::new([0u8; 32]);
+        Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+            .hash_password_into(password.as_bytes(), &salt, key.as_mut())
+            .map_err(|e| corrupted(format!("Argon2id derivation failed: {e}")))?;
+        Ok(Self { key, kdf })
+    }
+}
+
+/// Dapp session grant persisted in the vault.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "scope", rename_all = "snake_case")]
 pub enum PermissionScope {
@@ -114,7 +125,6 @@ pub enum PermissionScope {
     ProposeTransaction { account_id: String },
 }
 
-/// Active dApp session grant persisted in the vault.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionGrant {
     pub session_token: String,
@@ -126,488 +136,244 @@ pub struct SessionGrant {
     pub expires_at: u64,
 }
 
-/// Tracked fungible token definition metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackedTokenRecord {
-    pub definition_id: String,
-    pub symbol: String,
-    pub decimals: u8,
-    pub total_supply: String,
-    pub mint_authority: Option<String>,
-}
-
-/// Write-ahead pending private spend record (`PendingPrivateSpend`, `docs/01` §3.3 & `docs/10` §4.2).
-///
-/// Written to `vault.enc` *before* ZK proof generation/broadcast begins so that if Basecamp
-/// or the machine crashes mid-proof, the locked nullifiers are tracked and reconciled on
-/// restart — preventing accidental double-spend rejections or orphaned private notes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingPrivateSpend {
-    pub proposal_id: String,
-    pub from_account: String,
-    pub to_account: String,
-    pub asset_id: String,
-    pub amount: String,
-    pub nullifiers: Vec<String>,
-    pub tx_hash: Option<String>,
-    pub status: String,
-    pub created_at: u64,
-}
-
-/// Write-ahead transaction & nullifier journal entry (prevents double-spends on crash).
+/// Record of a transaction this wallet submitted. `status` is `"included"` only once the
+/// sequencer reported the block; `"submitted"` entries are reconciled on next start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxJournalEntry {
     pub tx_hash: String,
+    pub kind: String,
     pub from_account: String,
     pub to_account: String,
     pub amount: String,
-    pub kind: String,
     pub status: String,
-    pub locked_nullifiers: Vec<String>,
+    pub block_id: Option<u64>,
     pub created_at: u64,
 }
 
-/// Logos Storage (Codex) encrypted vault backup metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackupMetadata {
-    pub latest_cid: String,
-    pub storage_node_url: String,
-    pub uploaded_at: u64,
-}
-
-/// Canonical decrypted wallet state (`CanonicalWalletStateV1`).
-/// Zeroizes mnemonic and seed material on drop.
+/// Decrypted vault payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct CanonicalWalletStateV1 {
-    /// 24-word BIP-39 mnemonic phrase.
-    pub mnemonic_phrase: String,
-    /// Serialized upstream `WalletCore` PersistentStorage blob (keys, chain tree, private notes).
-    pub upstream_storage_blob: Vec<u8>,
-    /// Next derivation index for public accounts (`m/44'/9999'/0'/0/i`).
-    pub next_public_index: u32,
-    /// Next derivation index for private accounts (`m/44'/9999'/1'/0/i`).
-    pub next_private_index: u32,
-    /// Active selected account ID (`Public/<base58>` or `Private/<base58>`).
+pub struct WalletStateV2 {
+    /// Official upstream wallet storage (JSON), base64-encoded. Contains secret keys.
+    pub upstream_storage_b64: String,
+    #[zeroize(skip)]
+    pub network_id: String,
+    #[zeroize(skip)]
+    pub sequencer_url: String,
     #[zeroize(skip)]
     pub active_account_id: Option<String>,
-    /// Extended account metadata keyed by `account_id`.
     #[zeroize(skip)]
-    pub account_metadata: BTreeMap<String, AccountMetadataRecord>,
-    /// Active dApp session grants.
-    #[zeroize(skip)]
-    pub active_sessions: Vec<SessionGrant>,
-    /// Tracked fungible token definitions.
-    #[zeroize(skip)]
-    pub tracked_tokens: Vec<TrackedTokenRecord>,
-    /// Write-ahead transaction & nullifier journal.
+    pub sessions: Vec<SessionGrant>,
     #[zeroize(skip)]
     pub tx_journal: Vec<TxJournalEntry>,
-    /// Write-ahead pending private note spends (`PendingPrivateSpend`) for mid-proof crash recovery.
+    /// Token ids (definition accounts) this wallet has defined/used — non-secret.
+    ///  keeps vaults written before this field readable.
     #[serde(default)]
     #[zeroize(skip)]
-    pub pending_private_spends: Vec<PendingPrivateSpend>,
-    /// Configured network/zone profile (`"lez-testnet-0.4"`, `"lez-localnet"`, etc.).
+    pub tracked_tokens: Vec<String>,
     #[zeroize(skip)]
-    pub active_zone: String,
-    /// Optional Logos Storage backup metadata.
-    #[zeroize(skip)]
-    pub backup_meta: Option<BackupMetadata>,
+    pub created_at: u64,
 }
 
-impl CanonicalWalletStateV1 {
-    /// Construct a fresh `CanonicalWalletStateV1` from a validated BIP-39 mnemonic phrase.
-    pub fn new(mnemonic_phrase: String, active_zone: String) -> Self {
-        Self {
-            mnemonic_phrase,
-            upstream_storage_blob: Vec::new(),
-            next_public_index: 0,
-            next_private_index: 0,
-            active_account_id: None,
-            account_metadata: BTreeMap::new(),
-            active_sessions: Vec::new(),
-            tracked_tokens: Vec::new(),
-            tx_journal: Vec::new(),
-            pending_private_spends: Vec::new(),
-            active_zone,
-            backup_meta: None,
-        }
+impl WalletStateV2 {
+    pub fn upstream_storage(&self) -> LezerResult<Zeroizing<Vec<u8>>> {
+        b64()
+            .decode(&self.upstream_storage_b64)
+            .map(Zeroizing::new)
+            .map_err(|e| corrupted(format!("invalid upstream storage encoding: {e}")))
+    }
+
+    pub fn set_upstream_storage(&mut self, bytes: &[u8]) {
+        self.upstream_storage_b64.zeroize();
+        self.upstream_storage_b64 = b64().encode(bytes);
     }
 }
 
-/// Generate a fresh 24-word BIP-39 mnemonic (256 bits of cryptographic entropy).
-pub fn generate_mnemonic_24() -> String {
-    let mut entropy = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut entropy);
-    let mnemonic = Mnemonic::from_entropy(&entropy).expect("32 bytes is valid BIP-39 entropy");
-    entropy.zeroize();
-    mnemonic.to_string()
-}
-
-/// Validate and normalize a BIP-39 mnemonic phrase (12 or 24 words).
-pub fn validate_mnemonic(phrase: &str) -> LezerResult<String> {
-    let normalized = phrase
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let parsed: Mnemonic = normalized.parse().map_err(|e| {
-        LezerError::new(
-            ErrorCode::InvalidMnemonic,
-            format!("BIP-39 mnemonic validation failed: {e}"),
-        )
-    })?;
-    Ok(parsed.to_string())
-}
-
-/// Compute the canonical header MAC (`SHA-256` over `schema_version`, `kdf`, and `nonce_b64`).
-pub fn compute_header_mac_hex(
-    schema_version: u32,
-    kdf: &Argon2ParamsRecord,
-    nonce_b64: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"lezer-vault-header-v1:");
-    hasher.update(schema_version.to_le_bytes());
-    hasher.update(kdf.algorithm.as_bytes());
-    hasher.update(kdf.memory_kib.to_le_bytes());
-    hasher.update(kdf.iterations.to_le_bytes());
-    hasher.update(kdf.parallelism.to_le_bytes());
-    hasher.update(kdf.salt_b64.as_bytes());
-    hasher.update(nonce_b64.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-/// Derive the 256-bit wrapping key from `password` and `kdf` using `Argon2id`.
-pub fn derive_wrapping_key(password: &str, kdf: &Argon2ParamsRecord) -> LezerResult<[u8; 32]> {
-    if kdf.algorithm != "argon2id" {
-        return Err(LezerError::new(
-            ErrorCode::VaultCorrupted,
-            format!("unsupported KDF algorithm '{}'", kdf.algorithm),
-        ));
-    }
-    let salt = base64::engine::general_purpose::STANDARD
-        .decode(&kdf.salt_b64)
-        .map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("invalid KDF salt base64: {e}"),
-            )
-        })?;
-    let params = Params::new(
-        kdf.memory_kib,
-        kdf.iterations,
-        kdf.parallelism,
-        Some(32),
-    )
-    .map_err(|e| {
-        LezerError::new(
-            ErrorCode::VaultCorrupted,
-            format!("invalid Argon2id parameters: {e}"),
-        )
-    })?;
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = [0u8; 32];
-    argon2
-        .hash_password_into(password.as_bytes(), &salt, &mut key)
-        .map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("Argon2id key derivation failed: {e}"),
-            )
-        })?;
-    Ok(key)
+fn header_mac_hex(schema_version: u32, kdf: &Argon2ParamsRecord, nonce_b64: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(b"lezer-vault-header-v1:");
+    h.update(schema_version.to_le_bytes());
+    h.update(kdf.algorithm.as_bytes());
+    h.update(kdf.memory_kib.to_le_bytes());
+    h.update(kdf.iterations.to_le_bytes());
+    h.update(kdf.parallelism.to_le_bytes());
+    h.update(kdf.salt_b64.as_bytes());
+    h.update(nonce_b64.as_bytes());
+    hex::encode(h.finalize())
 }
 
 impl SealedVaultEnvelopeV1 {
-    /// Seal a [`CanonicalWalletStateV1`] with `password` using random salt and 192-bit nonce.
-    pub fn seal(state: &CanonicalWalletStateV1, password: &str) -> LezerResult<Self> {
-        let kdf = Argon2ParamsRecord::new_random_salt();
+    /// Encrypt `state` with an already-derived key and a fresh random nonce.
+    pub fn seal(state: &WalletStateV2, key: &VaultKey) -> LezerResult<Self> {
         let mut nonce = [0u8; 24];
         rand::thread_rng().fill_bytes(&mut nonce);
-        Self::seal_deterministic(state, password, kdf, &nonce)
-    }
-
-    /// Deterministic seal with caller-provided `kdf` and 24-byte `nonce` (used for golden test vectors).
-    pub fn seal_deterministic(
-        state: &CanonicalWalletStateV1,
-        password: &str,
-        kdf: Argon2ParamsRecord,
-        nonce_bytes: &[u8; 24],
-    ) -> LezerResult<Self> {
-        Self::seal_with_version(
-            CURRENT_VAULT_SCHEMA_VERSION,
-            state,
-            password,
-            kdf,
-            nonce_bytes,
-        )
-    }
-
-    /// Seal a wallet state at an explicit `schema_version` (used by migration tests).
-    pub fn seal_with_version(
-        schema_version: u32,
-        state: &CanonicalWalletStateV1,
-        password: &str,
-        kdf: Argon2ParamsRecord,
-        nonce_bytes: &[u8; 24],
-    ) -> LezerResult<Self> {
-        let mut key = derive_wrapping_key(password, &kdf)?;
-        let cipher = XChaCha20Poly1305::new((&key).into());
-        key.zeroize();
-
-        let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
-        let header_mac_hex = compute_header_mac_hex(schema_version, &kdf, &nonce_b64);
-
-        let mut plaintext = serde_json::to_vec(state).map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("failed to serialize wallet state: {e}"),
-            )
-        })?;
-
-        let ciphertext = cipher
-            .encrypt(
-                XNonce::from_slice(nonce_bytes),
-                Payload {
-                    msg: &plaintext,
-                    aad: header_mac_hex.as_bytes(),
-                },
-            )
-            .map_err(|_| {
-                LezerError::new(
-                    ErrorCode::VaultCorrupted,
-                    "XChaCha20-Poly1305 encryption failed",
-                )
-            });
-        plaintext.zeroize();
-        let ciphertext = ciphertext?;
-
+        let nonce_b64 = b64().encode(nonce);
+        let schema_version = CURRENT_VAULT_SCHEMA_VERSION;
+        let mac = header_mac_hex(schema_version, &key.kdf, &nonce_b64);
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(state).map_err(|e| corrupted(format!("serialize vault: {e}")))?,
+        );
+        let ciphertext = XChaCha20Poly1305::new(key.key.as_ref().into())
+            .encrypt(XNonce::from_slice(&nonce), Payload { msg: &plaintext, aad: mac.as_bytes() })
+            .map_err(|_| corrupted("vault encryption failed"))?;
         Ok(Self {
             schema_version,
-            kdf,
+            kdf: key.kdf.clone(),
             nonce_b64,
-            ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
-            header_mac_hex,
+            ciphertext_b64: b64().encode(ciphertext),
+            header_mac_hex: mac,
         })
     }
 
-    /// Unseal and authenticate a [`SealedVaultEnvelopeV1`] using `password`.
-    /// Returns `LZR-1003` (`InvalidPassword`) if the password or authentication tag fails.
-    pub fn unseal(&self, password: &str) -> LezerResult<CanonicalWalletStateV1> {
-        let expected_mac =
-            compute_header_mac_hex(self.schema_version, &self.kdf, &self.nonce_b64);
-        if expected_mac != self.header_mac_hex {
+    /// Decrypt with `password`; returns the state and the derived key for later re-sealing.
+    pub fn unseal(&self, password: &str) -> LezerResult<(WalletStateV2, VaultKey)> {
+        if header_mac_hex(self.schema_version, &self.kdf, &self.nonce_b64) != self.header_mac_hex {
+            return Err(corrupted("vault header integrity check failed"));
+        }
+        if self.schema_version != CURRENT_VAULT_SCHEMA_VERSION {
             return Err(LezerError::new(
-                ErrorCode::VaultCorrupted,
-                "vault envelope header_mac_hex integrity check failed",
-            ));
-        }
-
-        let nonce_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&self.nonce_b64)
-            .map_err(|e| {
-                LezerError::new(
-                    ErrorCode::VaultCorrupted,
-                    format!("invalid vault nonce base64: {e}"),
-                )
-            })?;
-        if nonce_bytes.len() != 24 {
-            return Err(LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("expected 24-byte XChaCha20 nonce, got {}", nonce_bytes.len()),
-            ));
-        }
-
-        let ciphertext = base64::engine::general_purpose::STANDARD
-            .decode(&self.ciphertext_b64)
-            .map_err(|e| {
-                LezerError::new(
-                    ErrorCode::VaultCorrupted,
-                    format!("invalid vault ciphertext base64: {e}"),
-                )
-            })?;
-
-        let mut key = derive_wrapping_key(password, &self.kdf)?;
-        let cipher = XChaCha20Poly1305::new((&key).into());
-        key.zeroize();
-
-        let mut plaintext = cipher
-            .decrypt(
-                XNonce::from_slice(&nonce_bytes),
-                Payload {
-                    msg: &ciphertext,
-                    aad: self.header_mac_hex.as_bytes(),
-                },
-            )
-            .map_err(|_| {
-                LezerError::new(
-                    ErrorCode::InvalidPassword,
-                    "failed to unlock vault: invalid password or authentication tag mismatch",
-                )
-            })?;
-
-        let result = serde_json::from_slice::<CanonicalWalletStateV1>(&plaintext).map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("decrypted vault payload is malformed JSON: {e}"),
-            )
-        });
-        plaintext.zeroize();
-        result
-    }
-
-    /// Write envelope to `path` using crash-safe **write-temp-fsync-rename** atomic persistence.
-    pub fn write_atomic(&self, path: &Path) -> LezerResult<()> {
-        let parent = path.parent().ok_or_else(|| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("vault path '{}' has no parent directory", path.display()),
-            )
-        })?;
-        fs::create_dir_all(parent).map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("failed to create vault directory '{}': {e}", parent.display()),
-            )
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-        }
-
-        let pid = std::process::id();
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("vault.enc");
-        let tmp_path = parent.join(format!("{file_name}.tmp.{pid}"));
-
-        let serialized = serde_json::to_vec_pretty(self).map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("failed to serialize SealedVaultEnvelopeV1: {e}"),
-            )
-        })?;
-
-        {
-            let mut tmp_file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|e| {
-                    LezerError::new(
-                        ErrorCode::VaultCorrupted,
-                        format!("failed to open temp vault file '{}': {e}", tmp_path.display()),
-                    )
-                })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = tmp_file.set_permissions(fs::Permissions::from_mode(0o600));
-            }
-            tmp_file.write_all(&serialized).map_err(|e| {
-                LezerError::new(
-                    ErrorCode::VaultCorrupted,
-                    format!("failed to write temp vault file: {e}"),
-                )
-            })?;
-            tmp_file.sync_all().map_err(|e| {
-                LezerError::new(
-                    ErrorCode::VaultCorrupted,
-                    format!("failed to fsync temp vault file: {e}"),
-                )
-            })?;
-        }
-
-        fs::rename(&tmp_path, path).map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
+                ErrorCode::MigrationFailed,
                 format!(
-                    "failed to atomically rename '{}' -> '{}': {e}",
-                    tmp_path.display(),
-                    path.display()
+                    "vault schema v{} was written by a pre-release build whose keys are not LEZ-compatible; \
+                     move it aside and create a new wallet",
+                    self.schema_version
                 ),
-            )
-        })?;
-
-        // Sync parent directory to make rename durable across power loss.
-        if let Ok(dir_file) = File::open(parent) {
-            let _ = dir_file.sync_all();
+            ));
         }
-
-        Ok(())
+        let nonce = b64().decode(&self.nonce_b64).map_err(|e| corrupted(format!("invalid nonce: {e}")))?;
+        if nonce.len() != 24 {
+            return Err(corrupted("invalid nonce length"));
+        }
+        let ciphertext =
+            b64().decode(&self.ciphertext_b64).map_err(|e| corrupted(format!("invalid ciphertext: {e}")))?;
+        let key = VaultKey::derive(password, self.kdf.clone())?;
+        let plaintext = Zeroizing::new(
+            XChaCha20Poly1305::new(key.key.as_ref().into())
+                .decrypt(XNonce::from_slice(&nonce), Payload { msg: &ciphertext, aad: self.header_mac_hex.as_bytes() })
+                .map_err(|_| LezerError::new(ErrorCode::InvalidPassword, "wrong password"))?,
+        );
+        let state = serde_json::from_slice(&plaintext).map_err(|e| corrupted(format!("malformed vault payload: {e}")))?;
+        Ok((state, key))
     }
 
-    /// Read envelope from `path`. Returns `LZR-1001` (`VaultUninitialized`) if file does not exist.
+    pub fn write_atomic(&self, path: &Path) -> LezerResult<()> {
+        let bytes = serde_json::to_vec_pretty(self).map_err(|e| corrupted(format!("serialize envelope: {e}")))?;
+        write_private_atomic(path, &bytes).map_err(|e| corrupted(format!("failed to write vault: {e}")))
+    }
+
     pub fn read_from_disk(path: &Path) -> LezerResult<Self> {
         if !path.exists() {
             return Err(LezerError::new(
                 ErrorCode::VaultUninitialized,
-                format!(
-                    "no vault found at '{}' — run `lezer init` or `lezer restore` first",
-                    path.display()
-                ),
+                format!("no vault at '{}' — run `lezer init` or `lezer restore` first", path.display()),
             ));
         }
-        let bytes = fs::read(path).map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("failed to read vault file '{}': {e}", path.display()),
-            )
-        })?;
-        serde_json::from_slice::<Self>(&bytes).map_err(|e| {
-            LezerError::new(
-                ErrorCode::VaultCorrupted,
-                format!("vault file '{}' is not a valid SealedVaultEnvelopeV1: {e}", path.display()),
-            )
-        })
+        let bytes = fs::read(path).map_err(|e| corrupted(format!("failed to read vault: {e}")))?;
+        serde_json::from_slice(&bytes).map_err(|e| corrupted(format!("not a Lezer vault file: {e}")))
     }
+}
+
+/// Create `dir` (and parents) with mode 0700.
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Crash-safe write (temp → fsync → rename → fsync dir) with file mode 0600.
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("path has no parent directory"))?;
+    ensure_private_dir(parent)?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = parent.join(format!(".{name}.tmp.{}", std::process::id()));
+    {
+        let mut opts = OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    if let Ok(dir) = File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn seal_unseal_roundtrip_and_wrong_password_rejected_with_lzr_1003() {
-        unsafe {
-            std::env::set_var("LEZER_KDF_MEMORY_KIB", "1024");
-        }
-        let mnemonic = generate_mnemonic_24();
-        let state = CanonicalWalletStateV1::new(mnemonic.clone(), "lez-testnet-0.4".to_string());
-        let env = SealedVaultEnvelopeV1::seal(&state, "correct-horse-battery-staple").unwrap();
-
-        let err = env.unseal("wrong-password").unwrap_err();
-        assert_eq!(err.code, ErrorCode::InvalidPassword);
-        assert_eq!(err.code.as_str(), "LZR-1003");
-
-        let recovered = env.unseal("correct-horse-battery-staple").unwrap();
-        assert_eq!(recovered.mnemonic_phrase, mnemonic);
+    fn sample_state() -> WalletStateV2 {
+        let mut s = WalletStateV2 {
+            upstream_storage_b64: String::new(),
+            network_id: "lez-localnet".into(),
+            sequencer_url: "http://127.0.0.1:3040".into(),
+            active_account_id: None,
+            sessions: vec![],
+            tx_journal: vec![],
+            tracked_tokens: vec![],
+            created_at: 1,
+        };
+        s.set_upstream_storage(b"{\"secret\":true}");
+        s
     }
 
     #[test]
-    fn crash_mid_write_leaves_existing_vault_intact() {
-        unsafe {
-            std::env::set_var("LEZER_KDF_MEMORY_KIB", "1024");
-        }
+    fn seal_unseal_roundtrip_and_wrong_password() {
+        let key = VaultKey::derive_new("correct horse").unwrap();
+        let env = SealedVaultEnvelopeV1::seal(&sample_state(), &key).unwrap();
+        assert_eq!(env.unseal("wrong").unwrap_err().code, ErrorCode::InvalidPassword);
+        let (state, _) = env.unseal("correct horse").unwrap();
+        assert_eq!(&*state.upstream_storage().unwrap(), b"{\"secret\":true}");
+    }
+
+    #[test]
+    fn reseal_with_cached_key_uses_fresh_nonce_and_same_password() {
+        let key = VaultKey::derive_new("pw").unwrap();
+        let a = SealedVaultEnvelopeV1::seal(&sample_state(), &key).unwrap();
+        let b = SealedVaultEnvelopeV1::seal(&sample_state(), &key).unwrap();
+        assert_ne!(a.nonce_b64, b.nonce_b64);
+        assert!(b.unseal("pw").is_ok());
+    }
+
+    #[test]
+    fn rejects_downgraded_kdf_and_v1_schema() {
+        let key = VaultKey::derive_new("pw").unwrap();
+        let mut env = SealedVaultEnvelopeV1::seal(&sample_state(), &key).unwrap();
+        env.kdf.memory_kib = 1024;
+        env.header_mac_hex = header_mac_hex(env.schema_version, &env.kdf, &env.nonce_b64);
+        assert_eq!(env.unseal("pw").unwrap_err().code, ErrorCode::VaultCorrupted);
+
+        let mut v1 = SealedVaultEnvelopeV1::seal(&sample_state(), &key).unwrap();
+        v1.schema_version = 1;
+        v1.header_mac_hex = header_mac_hex(1, &v1.kdf, &v1.nonce_b64);
+        assert_eq!(v1.unseal("pw").unwrap_err().code, ErrorCode::MigrationFailed);
+    }
+
+    #[test]
+    fn atomic_write_is_private_and_survives_stale_tmp() {
         let dir = tempfile::tempdir().unwrap();
-        let vault_path = dir.path().join("vault.enc");
-
-        let state1 = CanonicalWalletStateV1::new(
-            generate_mnemonic_24(),
-            "lez-testnet-0.4".to_string(),
-        );
-        let env1 = SealedVaultEnvelopeV1::seal(&state1, "pw1").unwrap();
-        env1.write_atomic(&vault_path).unwrap();
-
-        // Simulate a crashed process leaving a truncated `.tmp.<pid>` file next to `vault.enc`
-        let crashed_tmp = dir.path().join("vault.enc.tmp.99999");
-        fs::write(&crashed_tmp, b"{\"schema_version\": 1, \"truncated").unwrap();
-
-        // Reading `vault.enc` still succeeds and returns `state1` intact
-        let disk_env = SealedVaultEnvelopeV1::read_from_disk(&vault_path).unwrap();
-        let unlocked = disk_env.unseal("pw1").unwrap();
-        assert_eq!(unlocked.mnemonic_phrase, state1.mnemonic_phrase);
+        let path = dir.path().join("lezer").join("vault.enc");
+        let key = VaultKey::derive_new("pw").unwrap();
+        SealedVaultEnvelopeV1::seal(&sample_state(), &key).unwrap().write_atomic(&path).unwrap();
+        fs::write(path.parent().unwrap().join(".vault.enc.tmp.99999"), b"{trunc").unwrap();
+        assert!(SealedVaultEnvelopeV1::read_from_disk(&path).unwrap().unseal("pw").is_ok());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        }
     }
 }

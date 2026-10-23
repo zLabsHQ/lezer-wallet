@@ -1,0 +1,19 @@
+[package]
+name = "lezer-provider"
+description = "Lezer wallet provider logic for Logos Basecamp (caller-authenticated, SDK-independent)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lezer-core = { path = "../lezer-core" }
+lezer-adapter = { path = "../lezer-adapter" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

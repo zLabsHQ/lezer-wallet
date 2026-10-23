@@ -88,7 +88,7 @@ impl AuditLogger {
     /// Record a structured JSON log event locally.
     pub fn record(&self, level: &str, event: &str, details: serde_json::Value) {
         if let Some(parent) = self.log_path.parent() {
-            let _ = fs::create_dir_all(parent);
+            let _ = crate::vault::ensure_private_dir(parent);
         }
         self.rotate_if_needed();
 
@@ -104,10 +104,16 @@ impl AuditLogger {
         };
 
         if let Ok(line) = serde_json::to_string(&entry)
-            && let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.log_path)
+            && let Ok(mut file) = {
+                let mut opts = OpenOptions::new();
+                opts.create(true).append(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt as _;
+                    opts.mode(0o600);
+                }
+                opts.open(&self.log_path)
+            }
         {
             let _ = writeln!(file, "{line}");
         }

@@ -39,6 +39,10 @@ pub enum ErrorCode {
     DuplicateAccountLabel,
     #[serde(rename = "LZR-1008")]
     AccountNotFound,
+    #[serde(rename = "LZR-1009")]
+    VaultAlreadyExists,
+    #[serde(rename = "LZR-1010")]
+    InvalidAddress,
 
     // ── LZR-2xxx: Session & ACL ──────────────────────────────────────────
     #[serde(rename = "LZR-2001")]
@@ -61,6 +65,8 @@ pub enum ErrorCode {
     UnacknowledgedRiskGate,
     #[serde(rename = "LZR-3005")]
     ProposalDigestMismatch,
+    #[serde(rename = "LZR-3006")]
+    TransactionRejected,
 
     // ── LZR-4xxx: Network & Sequencer ────────────────────────────────────
     #[serde(rename = "LZR-4001")]
@@ -91,6 +97,8 @@ pub enum ErrorCode {
     BytecodeVerificationMismatch,
     #[serde(rename = "LZR-6004")]
     StorageNodeUnreachable,
+    #[serde(rename = "LZR-6005")]
+    ProgramNotDeployed,
 }
 
 impl ErrorCode {
@@ -105,6 +113,8 @@ impl ErrorCode {
             Self::VaultCorrupted => "LZR-1006",
             Self::DuplicateAccountLabel => "LZR-1007",
             Self::AccountNotFound => "LZR-1008",
+            Self::VaultAlreadyExists => "LZR-1009",
+            Self::InvalidAddress => "LZR-1010",
             Self::SessionExpiredOrInvalid => "LZR-2001",
             Self::AccountNotAuthorized => "LZR-2002",
             Self::PrivateBalanceForbidden => "LZR-2003",
@@ -114,6 +124,7 @@ impl ErrorCode {
             Self::SimulationReverted => "LZR-3003",
             Self::UnacknowledgedRiskGate => "LZR-3004",
             Self::ProposalDigestMismatch => "LZR-3005",
+            Self::TransactionRejected => "LZR-3006",
             Self::SequencerUnreachable => "LZR-4001",
             Self::DisallowedEndpointBlocked => "LZR-4002",
             Self::ShardContentionExhausted => "LZR-4003",
@@ -126,6 +137,7 @@ impl ErrorCode {
             Self::IdlFetchOrParseFailed => "LZR-6002",
             Self::BytecodeVerificationMismatch => "LZR-6003",
             Self::StorageNodeUnreachable => "LZR-6004",
+            Self::ProgramNotDeployed => "LZR-6005",
         }
     }
 
@@ -140,6 +152,8 @@ impl ErrorCode {
             Self::VaultCorrupted => "VaultCorrupted",
             Self::DuplicateAccountLabel => "DuplicateAccountLabel",
             Self::AccountNotFound => "AccountNotFound",
+            Self::VaultAlreadyExists => "VaultAlreadyExists",
+            Self::InvalidAddress => "InvalidAddress",
             Self::SessionExpiredOrInvalid => "SessionExpiredOrInvalid",
             Self::AccountNotAuthorized => "AccountNotAuthorized",
             Self::PrivateBalanceForbidden => "PrivateBalanceForbidden",
@@ -149,6 +163,7 @@ impl ErrorCode {
             Self::SimulationReverted => "SimulationReverted",
             Self::UnacknowledgedRiskGate => "UnacknowledgedRiskGate",
             Self::ProposalDigestMismatch => "ProposalDigestMismatch",
+            Self::TransactionRejected => "TransactionRejected",
             Self::SequencerUnreachable => "SequencerUnreachable",
             Self::DisallowedEndpointBlocked => "DisallowedEndpointBlocked",
             Self::ShardContentionExhausted => "ShardContentionExhausted",
@@ -161,6 +176,7 @@ impl ErrorCode {
             Self::IdlFetchOrParseFailed => "IdlFetchOrParseFailed",
             Self::BytecodeVerificationMismatch => "BytecodeVerificationMismatch",
             Self::StorageNodeUnreachable => "StorageNodeUnreachable",
+            Self::ProgramNotDeployed => "ProgramNotDeployed",
         }
     }
 
@@ -174,7 +190,9 @@ impl ErrorCode {
             | Self::MigrationFailed
             | Self::VaultCorrupted
             | Self::DuplicateAccountLabel
-            | Self::AccountNotFound => ErrorCategory::VaultAndAuth,
+            | Self::AccountNotFound
+            | Self::VaultAlreadyExists
+            | Self::InvalidAddress => ErrorCategory::VaultAndAuth,
             Self::SessionExpiredOrInvalid
             | Self::AccountNotAuthorized
             | Self::PrivateBalanceForbidden
@@ -183,7 +201,8 @@ impl ErrorCode {
             | Self::ProposalExpired
             | Self::SimulationReverted
             | Self::UnacknowledgedRiskGate
-            | Self::ProposalDigestMismatch => ErrorCategory::ApprovalAndSimulation,
+            | Self::ProposalDigestMismatch
+            | Self::TransactionRejected => ErrorCategory::ApprovalAndSimulation,
             Self::SequencerUnreachable
             | Self::DisallowedEndpointBlocked
             | Self::ShardContentionExhausted
@@ -195,7 +214,8 @@ impl ErrorCode {
             Self::RegistryEntryNotFound
             | Self::IdlFetchOrParseFailed
             | Self::BytecodeVerificationMismatch
-            | Self::StorageNodeUnreachable => ErrorCategory::RegistryAndStorage,
+            | Self::StorageNodeUnreachable
+            | Self::ProgramNotDeployed => ErrorCategory::RegistryAndStorage,
         }
     }
 
@@ -221,6 +241,8 @@ impl ErrorCode {
             "LZR-1006" => Some(Self::VaultCorrupted),
             "LZR-1007" => Some(Self::DuplicateAccountLabel),
             "LZR-1008" => Some(Self::AccountNotFound),
+            "LZR-1009" => Some(Self::VaultAlreadyExists),
+            "LZR-1010" => Some(Self::InvalidAddress),
             "LZR-2001" => Some(Self::SessionExpiredOrInvalid),
             "LZR-2002" => Some(Self::AccountNotAuthorized),
             "LZR-2003" => Some(Self::PrivateBalanceForbidden),
@@ -230,6 +252,7 @@ impl ErrorCode {
             "LZR-3003" => Some(Self::SimulationReverted),
             "LZR-3004" => Some(Self::UnacknowledgedRiskGate),
             "LZR-3005" => Some(Self::ProposalDigestMismatch),
+            "LZR-3006" => Some(Self::TransactionRejected),
             "LZR-4001" => Some(Self::SequencerUnreachable),
             "LZR-4002" => Some(Self::DisallowedEndpointBlocked),
             "LZR-4003" => Some(Self::ShardContentionExhausted),
@@ -242,6 +265,7 @@ impl ErrorCode {
             "LZR-6002" => Some(Self::IdlFetchOrParseFailed),
             "LZR-6003" => Some(Self::BytecodeVerificationMismatch),
             "LZR-6004" => Some(Self::StorageNodeUnreachable),
+            "LZR-6005" => Some(Self::ProgramNotDeployed),
             _ => None,
         }
     }
