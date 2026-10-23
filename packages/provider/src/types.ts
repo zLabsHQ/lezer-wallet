@@ -1,4 +1,7 @@
+/** Wire types of the `lezer_wallet_provider` Basecamp module (mirrors `lezer-core`). */
+
 export type VerificationBadgeState =
+  | 'protocol_builtin'
   | 'verified_source'
   | 'known_but_unverified'
   | 'no_registry_entry'
@@ -8,27 +11,7 @@ export interface SourceVerificationBadge {
   state: VerificationBadgeState;
   label: string;
   program_name: string;
-  program_version?: string | null;
-  program_id_hex: string;
-  repo_url?: string | null;
-  commit_hash?: string | null;
-  idl_cid?: string | null;
-  source_cid?: string | null;
-  requires_unverified_acknowledgement: boolean;
-  blocked_by_mismatch: boolean;
-}
-
-export interface SimulatedBalanceDelta {
-  account_id: string;
-  asset_id: string;
-  symbol: string;
-  delta: string;
-}
-
-export interface ComputeEstimate {
-  estimated_cycles: number;
-  segments: number;
-  estimated_fee_lez: string;
+  program_id: string;
 }
 
 export interface SecurityWarning {
@@ -38,123 +21,82 @@ export interface SecurityWarning {
   message: string;
 }
 
+export type Precheck =
+  | { result: 'passed'; available: string }
+  | { result: 'insufficient_funds'; available: string; required: string }
+  | { result: 'unavailable'; reason: string };
+
+export type PrivacyMode = 'public' | 'shielded' | 'deshielded' | 'private';
+
 export interface TransactionSummary {
   proposal_id: string;
   originating_dapp: string;
   signing_account: string;
-  privacy_mode: string;
-  program_id_hex: string;
-  program_name: string;
+  privacy_mode: PrivacyMode;
+  requires_zk_proof: boolean;
   instruction_name: string;
   headline: string;
-  balance_deltas: SimulatedBalanceDelta[];
-  authority_changes: string[];
-  decoded_args: Record<string, string>;
+  from: string;
+  to: string;
+  /** Atomic units, decimal string (u128). */
+  amount: string;
+  max_fee: string | null;
+  precheck: Precheck;
   verification_badge: SourceVerificationBadge;
-  compute_estimate: ComputeEstimate;
   warnings: SecurityWarning[];
   requires_unverified_ack: boolean;
   requires_critical_override: boolean;
-  raw_instruction_hex: string;
   summary_digest_hex: string;
-}
-
-export interface ApproveDecision {
-  proposal_id: string;
-  summary_digest_hex: string;
-  acknowledged_unverified: boolean;
-  critical_override: boolean;
 }
 
 export interface DappMetadata {
-  moduleName: string;
+  /** Shown to the user as secondary info; the authenticated origin is the calling module. */
   displayName: string;
-  version: string;
-  packageHash?: string;
-  icon?: string;
-}
-
-export interface ConnectOptions {
-  zone?: string;
+  /** Ask the user for permission to read balances of shared private accounts. */
   requestPrivateBalanceRead?: boolean;
 }
 
 export interface AccountRef {
   accountId: string;
   privacy: 'public' | 'private';
-  label: string;
-  receiveUri?: string;
 }
 
-export interface TokenBalanceEntry {
-  definitionId: string;
-  name: string;
-  holdingAccountId: string;
-  isAta: boolean;
-  privacy: 'public' | 'private';
+export interface Balance {
+  account_id: string;
+  kind: 'public' | 'private';
   balance: string;
-  mintAuthority?: string | null;
+  source: 'live' | 'cached' | 'local';
+  block_id: number | null;
 }
 
 export type TxIntent =
-  | {
-      kind: 'native_transfer';
-      from: string;
-      to: string;
-      amount: string;
-    }
-  | {
-      kind: 'token_transfer';
-      definition_id: string;
-      symbol: string;
-      from: string;
-      to: string;
-      amount: string;
-      use_ata: boolean;
-    }
-  | {
-      kind: 'token_create';
-      name: string;
-      total_supply: string;
-      creator_account: string;
-      mint_authority?: string | null;
-    }
-  | {
-      kind: 'faucet_claim';
-      account: string;
-      auto_shield_to?: string | null;
-    }
-  | {
-      kind: 'submit_testimonial';
-      author: string;
-      submission_id: string;
-      shard_key: string;
-      page_key: string;
-      username: string;
-      text: string;
-      timestamp: number;
-    }
-  | {
-      kind: 'program_call';
-      program_id_hex: string;
-      instruction_name?: string;
-      instruction_data_hex: string;
-      accounts: Array<{ account: string; writable: boolean; signer: boolean }>;
-    };
+  | { kind: 'native_transfer'; from: string; to: string; amount: string }
+  | { kind: 'submit_testimonial'; author: string; username: string; text: string };
+
+export type TxStatus = { state: 'included'; block_id: number } | { state: 'submitted'; detail: string };
 
 export interface TxReceipt {
-  txHash: string;
-  blockId?: number;
-  cyclesUsed?: number;
-  feePaid?: string;
+  tx_hash: string;
+  status: TxStatus;
+  mode: PrivacyMode;
+  from: string;
+  to: string;
+  amount: string;
+  build_ms: number;
+  inclusion_ms: number | null;
 }
 
-export interface FaucetStatus {
-  faucet_account_id: string;
-  prize_amount: string;
-  pool_balance: string;
-  claims_remaining: string;
-  difficulty_bytes: number;
-  can_claim: boolean;
-  blocked_reason?: string | null;
+/** `get_request_status` result. */
+export type RequestResolution =
+  | { status: 'pending'; request_id: string }
+  | { status: 'executing'; request_id: string }
+  | { status: 'approved_connect'; request_id: string; session_token: string; authorized_accounts: string[] }
+  | { status: 'approved_proposal'; request_id: string; tx_hash: string; result: TxReceipt }
+  | { status: 'rejected'; request_id: string; code: string; reason: string };
+
+export interface ProviderStatus {
+  network_id: string;
+  sequencer_url: string;
+  lock_state: 'uninitialized' | 'locked' | 'unlocked' | 'deferred_lock_pending';
+  busy: boolean;
 }

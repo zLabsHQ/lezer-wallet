@@ -1,117 +1,73 @@
 import { LezerSdkError } from './errors';
-import {
-  AccountRef,
-  ConnectOptions,
-  DappMetadata,
-  FaucetStatus,
-  TokenBalanceEntry,
-  TxIntent,
-  TxReceipt,
-} from './types';
+import type { AccountRef, Balance, DappMetadata, TxIntent, TxReceipt } from './types';
 
 /**
- * Deterministic `MockLezerProvider` for the `apps/lezer-portal` interactive playground
- * and dApp unit testing (zero key custody).
+ * In-memory stand-in with the same surface as `LezerProvider`, for dApp unit tests and the
+ * portal playground. It holds no keys and never touches a chain; receipts are clearly fake
+ * (`status.state === 'submitted'`, `detail: 'mock'`).
  */
 export class MockLezerProvider {
-  private sessionToken: string | null = null;
+  private connected = false;
   private allowPrivateRead = false;
   private readonly accounts: AccountRef[] = [
-    {
-      accountId: 'Public/BH2zpUcwfB6cTKjYp2N8FFQNYSxjighmDfMYveFCC1Wf',
-      privacy: 'public',
-      label: 'Main Public',
-    },
-    {
-      accountId: 'Private/9xLm2P8vQaShieldedVaultMockAccount111111111',
-      privacy: 'private',
-      label: 'Shielded Vault',
-      receiveUri: 'lezer:priv1MockShieldedReceiveUriV1',
-    },
+    { accountId: 'Public/MockPublicAccount11111111111111111111111', privacy: 'public' },
+    { accountId: 'Private/MockPrivateAccount1111111111111111111111', privacy: 'private' },
   ];
 
-  async connect(
-    _dapp: DappMetadata,
-    opts?: ConnectOptions,
-  ): Promise<{ sessionToken: string; accounts: AccountRef[] }> {
-    this.sessionToken = 'lzr_sess_mock_deterministic_01';
-    this.allowPrivateRead = Boolean(opts?.requestPrivateBalanceRead);
-    return {
-      sessionToken: this.sessionToken,
-      accounts: [...this.accounts],
-    };
-  }
-
-  async disconnect(): Promise<void> {
-    this.sessionToken = null;
-    this.allowPrivateRead = false;
-  }
-
-  async getAccounts(): Promise<AccountRef[]> {
-    this.ensureConnected();
+  async connect(dapp: DappMetadata): Promise<AccountRef[]> {
+    this.connected = true;
+    this.allowPrivateRead = Boolean(dapp.requestPrivateBalanceRead);
     return [...this.accounts];
   }
 
-  async getBalance(accountId: string): Promise<string> {
-    this.ensureConnected();
-    if (accountId.startsWith('Private/') && !this.allowPrivateRead) {
-      throw new LezerSdkError({
-        code: 'LZR-2003',
-        name: 'PrivateBalanceForbidden',
-        category: 'session_and_acl',
-        message: `ReadPrivateBalance permission was not granted for ${accountId}`,
-        retryable: false,
-      });
-    }
-    return accountId.startsWith('Private/') ? '350' : '1420';
+  async disconnect(): Promise<void> {
+    this.connected = false;
   }
 
-  async getTokenBalances(accountId: string): Promise<TokenBalanceEntry[]> {
-    this.ensureConnected();
-    return [
-      {
-        definitionId: 'Public/MintDefLEZERUSD111111111111111111111111',
-        name: 'LEZERUSD',
-        holdingAccountId: `Public/ATA_${accountId.slice(-8)}`,
-        isAta: true,
-        privacy: accountId.startsWith('Private/') ? 'private' : 'public',
-        balance: '700',
-        mintAuthority: null,
-      },
-    ];
-  }
-
-  async proposeTransaction(_intent: TxIntent): Promise<TxReceipt> {
-    this.ensureConnected();
-    return {
-      txHash: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
-      blockId: 36316,
-      cyclesUsed: 155648,
-      feePaid: '0',
-    };
-  }
-
-  async faucetInfo(): Promise<FaucetStatus> {
-    return {
-      faucet_account_id: 'Public/EfQhKQAkX2FJiwNii2WFQsGndjvF1Mzd7RuVe7QdPLw7',
-      prize_amount: '150',
-      pool_balance: '1500000',
-      claims_remaining: '10000',
-      difficulty_bytes: 1,
-      can_claim: true,
-      blocked_reason: null,
-    };
-  }
-
-  private ensureConnected(): void {
-    if (!this.sessionToken) {
+  private ensure(): void {
+    if (!this.connected) {
       throw new LezerSdkError({
         code: 'LZR-2001',
         name: 'SessionExpiredOrInvalid',
         category: 'session_and_acl',
-        message: 'Provider is not connected; call connect() first',
+        message: 'not connected',
         retryable: false,
       });
     }
+  }
+
+  async getAccounts(): Promise<AccountRef[]> {
+    this.ensure();
+    return [...this.accounts];
+  }
+
+  async getBalance(accountId: string): Promise<Balance> {
+    this.ensure();
+    const isPrivate = accountId.startsWith('Private/');
+    if (isPrivate && !this.allowPrivateRead) {
+      throw new LezerSdkError({
+        code: 'LZR-2003',
+        name: 'PrivateBalanceForbidden',
+        category: 'session_and_acl',
+        message: 'private balance read not granted',
+        retryable: false,
+      });
+    }
+    return { account_id: accountId, kind: isPrivate ? 'private' : 'public', balance: '1000000000', source: 'live', block_id: 1 };
+  }
+
+  async proposeTransaction(intent: TxIntent): Promise<TxReceipt> {
+    this.ensure();
+    const from = intent.kind === 'native_transfer' ? intent.from : intent.author;
+    return {
+      tx_hash: '0'.repeat(64),
+      status: { state: 'submitted', detail: 'mock' },
+      mode: 'public',
+      from,
+      to: intent.kind === 'native_transfer' ? intent.to : 'testimonial program',
+      amount: intent.kind === 'native_transfer' ? intent.amount : '0',
+      build_ms: 0,
+      inclusion_ms: null,
+    };
   }
 }

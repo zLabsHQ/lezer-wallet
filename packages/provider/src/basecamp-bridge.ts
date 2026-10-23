@@ -1,137 +1,190 @@
 import { LezerErrorEnvelope, LezerSdkError } from './errors';
-import {
+import type {
   AccountRef,
-  ConnectOptions,
+  Balance,
   DappMetadata,
-  FaucetStatus,
-  TokenBalanceEntry,
+  ProviderStatus,
+  RequestResolution,
   TxIntent,
   TxReceipt,
 } from './types';
 
-interface LogosGlobal {
-  callModuleAsync?: (
-    moduleName: string,
-    methodName: string,
+/** The Logos host bridge (`logos-view-module-runtime` LogosQmlBridge). */
+interface LogosBridge {
+  callModuleAsync(
+    module: string,
+    method: string,
     args: unknown[],
     callback: (payload: string) => void,
-  ) => void;
+    timeoutMs?: number,
+  ): void;
 }
 
-function getLogosGlobal(): LogosGlobal | undefined {
-  const g = globalThis as unknown as { logos?: LogosGlobal };
-  return g.logos;
+export interface LezerProviderOptions {
+  /** Injected bridge; defaults to `globalThis.logos`. */
+  bridge?: LogosBridge;
+  /** Poll interval while waiting for the user (ms). */
+  pollIntervalMs?: number;
+  /** Give up waiting for the user after this long (ms). Default 10 min. */
+  approvalTimeoutMs?: number;
+  /** A transaction with a zero-knowledge proof can take minutes; default 20 min. */
+  executionTimeoutMs?: number;
 }
 
+const MODULE = 'lezer_wallet_provider';
+
+function bridgeError(message: string): LezerSdkError {
+  return new LezerSdkError({
+    code: 'LZR-4001',
+    name: 'SequencerUnreachable',
+    category: 'network_and_sequencer',
+    message,
+    retryable: true,
+  });
+}
+
+/** Decode a bridge payload: JSON of the `tstr` result, which is itself JSON. */
+export function decodePayload<T>(payload: string): T {
+  let value: unknown = JSON.parse(payload);
+  if (typeof value === 'string') value = JSON.parse(value);
+  const err = (value as { error?: unknown } | null)?.error;
+  if (typeof err === 'string') throw bridgeError(err);
+  if (err && typeof err === 'object') throw new LezerSdkError(err as LezerErrorEnvelope);
+  return value as T;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * dApp-side client for the Lezer wallet. The wallet authenticates your module by its
+ * host-issued identity; sessions cannot be used by other modules. Every transaction is
+ * shown to the user in the wallet's approval sheet before it is signed.
+ */
 export class LezerProvider {
   private sessionToken: string | null = null;
-  private readonly moduleName = 'lezer_wallet_provider';
+  private readonly bridge: LogosBridge;
+  private readonly pollIntervalMs: number;
+  private readonly approvalTimeoutMs: number;
+  private readonly executionTimeoutMs: number;
 
-  static isAvailable(): boolean {
-    return typeof getLogosGlobal()?.callModuleAsync === 'function';
+  constructor(opts: LezerProviderOptions = {}) {
+    const bridge = opts.bridge ?? (globalThis as { logos?: LogosBridge }).logos;
+    if (!bridge?.callModuleAsync) throw bridgeError('Logos bridge (logos.callModuleAsync) is not available');
+    this.bridge = bridge;
+    this.pollIntervalMs = opts.pollIntervalMs ?? 1000;
+    this.approvalTimeoutMs = opts.approvalTimeoutMs ?? 10 * 60_000;
+    this.executionTimeoutMs = opts.executionTimeoutMs ?? 20 * 60_000;
   }
 
-  private callModule<T>(method: string, args: unknown[]): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const logos = getLogosGlobal();
-      if (!logos?.callModuleAsync) {
-        reject(
-          new LezerSdkError({
-            code: 'LZR-4001',
-            name: 'SequencerUnreachable',
-            category: 'network_and_sequencer',
-            message: 'Logos Basecamp IPC bridge (window.logos.callModuleAsync) is not available',
-            retryable: false,
-          }),
-        );
-        return;
-      }
+  static isAvailable(): boolean {
+    return typeof (globalThis as { logos?: LogosBridge }).logos?.callModuleAsync === 'function';
+  }
 
-      logos.callModuleAsync(this.moduleName, method, args, (raw: string) => {
+  private call<T>(method: string, args: string[]): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this.bridge.callModuleAsync(MODULE, method, args, (payload) => {
         try {
-          const parsed = JSON.parse(raw) as { error?: LezerErrorEnvelope } & T;
-          if (parsed && typeof parsed === 'object' && 'error' in parsed && parsed.error) {
-            reject(new LezerSdkError(parsed.error));
-            return;
-          }
-          resolve(parsed);
-        } catch (err) {
-          reject(err);
+          resolve(decodePayload<T>(payload));
+        } catch (e) {
+          reject(e);
         }
       });
     });
   }
 
-  async connect(
-    dapp: DappMetadata,
-    opts?: ConnectOptions,
-  ): Promise<{ sessionToken: string; accounts: AccountRef[] }> {
-    const req = await this.callModule<{ request_id: string; status: string }>('connect', [
-      JSON.stringify({ ...dapp, ...opts }),
-    ]);
-    const resolved = await this.callModule<{
-      status: string;
-      session_token?: string;
-      authorized_accounts?: string[];
-    }>('get_request_status', [req.request_id]);
-
-    const token = resolved.session_token ?? '';
-    this.sessionToken = token;
-    const accounts: AccountRef[] = (resolved.authorized_accounts ?? []).map((id) => ({
-      accountId: id,
-      privacy: id.startsWith('Private/') ? 'private' : 'public',
-      label: id,
-    }));
-    return { sessionToken: token, accounts };
+  private requireSession(): string {
+    if (!this.sessionToken) {
+      throw new LezerSdkError({
+        code: 'LZR-2001',
+        name: 'SessionExpiredOrInvalid',
+        category: 'session_and_acl',
+        message: 'not connected — call connect() first',
+        retryable: false,
+      });
+    }
+    return this.sessionToken;
   }
 
-  async disconnect(): Promise<void> {
-    if (this.sessionToken) {
-      await this.callModule('disconnect', [this.sessionToken]);
-      this.sessionToken = null;
+  /** Poll a request until it leaves `pending`/`executing`, or time out. */
+  private async waitFor(requestId: string, timeoutMs: number): Promise<RequestResolution> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const r = await this.call<RequestResolution>('get_request_status', [requestId]);
+      if (r.status !== 'pending' && r.status !== 'executing') return r;
+      if (Date.now() > deadline) {
+        throw new LezerSdkError({
+          code: 'LZR-3002',
+          name: 'ProposalExpired',
+          category: 'approval_and_simulation',
+          message: `no decision for ${requestId} within ${timeoutMs} ms`,
+          retryable: true,
+        });
+      }
+      await sleep(this.pollIntervalMs);
     }
   }
 
+  private static rejected(r: Extract<RequestResolution, { status: 'rejected' }>): LezerSdkError {
+    return new LezerSdkError({
+      code: r.code,
+      name: r.code === 'LZR-3001' ? 'UserRejected' : 'RequestRejected',
+      category: 'approval_and_simulation',
+      message: r.reason,
+      retryable: false,
+    });
+  }
+
+  async status(): Promise<ProviderStatus> {
+    return this.call<ProviderStatus>('get_status', []);
+  }
+
+  /** Ask the user to connect; resolves once they approve (or rejects if they decline). */
+  async connect(dapp: DappMetadata): Promise<AccountRef[]> {
+    const req = await this.call<{ request_id: string }>('connect', [JSON.stringify(dapp)]);
+    const r = await this.waitFor(req.request_id, this.approvalTimeoutMs);
+    if (r.status === 'rejected') throw LezerProvider.rejected(r);
+    if (r.status !== 'approved_connect') throw bridgeError(`unexpected resolution ${r.status}`);
+    this.sessionToken = r.session_token;
+    return r.authorized_accounts.map(toRef);
+  }
+
+  async disconnect(): Promise<void> {
+    if (!this.sessionToken) return;
+    await this.call('disconnect', [this.sessionToken]);
+    this.sessionToken = null;
+  }
+
   async getAccounts(): Promise<AccountRef[]> {
-    const res = await this.callModule<{ accounts: string[] }>('get_accounts', [
-      this.sessionToken ?? '',
-    ]);
-    return res.accounts.map((id) => ({
-      accountId: id,
-      privacy: id.startsWith('Private/') ? 'private' : 'public',
-      label: id,
-    }));
+    const res = await this.call<{ accounts: string[] }>('get_accounts', [this.requireSession()]);
+    return res.accounts.map(toRef);
   }
 
-  async getBalance(accountId: string, assetId: 'native' | `token:${string}` = 'native'): Promise<string> {
-    const res = await this.callModule<{ balance: string }>('get_balance', [
-      this.sessionToken ?? '',
-      accountId,
-      assetId,
-    ]);
-    return res.balance;
+  /** Private accounts require the user's explicit per-account permission (else LZR-2003). */
+  async getBalance(accountId: string): Promise<Balance> {
+    return this.call<Balance>('get_balance', [this.requireSession(), accountId]);
   }
 
-  async getTokenBalances(accountId: string): Promise<TokenBalanceEntry[]> {
-    const res = await this.callModule<{ balances: TokenBalanceEntry[] }>('get_token_balances', [
-      this.sessionToken ?? '',
-      accountId,
-    ]);
-    return res.balances;
+  async getReceiveAddress(accountId: string): Promise<string> {
+    const r = await this.call<{ receive_address: string }>('get_receive_address', [this.requireSession(), accountId]);
+    return r.receive_address;
   }
 
+  /**
+   * Propose a transaction. Resolves with the receipt once the user approved it and the
+   * sequencer accepted it (private transfers include proof generation: minutes).
+   */
   async proposeTransaction(intent: TxIntent): Promise<TxReceipt> {
-    const res = await this.callModule<{ request_id: string }>('propose_transaction', [
-      this.sessionToken ?? '',
+    const req = await this.call<{ request_id: string }>('propose_transaction', [
+      this.requireSession(),
       JSON.stringify(intent),
     ]);
-    const finalStatus = await this.callModule<{ tx_hash?: string }>('get_request_status', [
-      res.request_id,
-    ]);
-    return { txHash: finalStatus.tx_hash ?? '' };
+    const r = await this.waitFor(req.request_id, this.approvalTimeoutMs + this.executionTimeoutMs);
+    if (r.status === 'rejected') throw LezerProvider.rejected(r);
+    if (r.status !== 'approved_proposal') throw bridgeError(`unexpected resolution ${r.status}`);
+    return r.result;
   }
+}
 
-  async faucetInfo(): Promise<FaucetStatus> {
-    return this.callModule<FaucetStatus>('faucet_info', []);
-  }
+function toRef(id: string): AccountRef {
+  return { accountId: id, privacy: id.startsWith('Private/') ? 'private' : 'public' };
 }

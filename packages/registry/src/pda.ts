@@ -3,11 +3,10 @@
  * (`lezer_registry` and `lezer_testimonial`).
  */
 
-export const LEZER_REGISTRY_PROGRAM_HEX =
-  'be6cd0c3c15e6d6236cadf3af0eb63332473f223c0713256f7a5b83e0fac2cf5';
+/** Program IDs are filled from `programs/ARTIFACTS.md` only after a real deployment. */
+export const LEZER_REGISTRY_PROGRAM_HEX: string | null = null;
 
-export const LEZER_TESTIMONIAL_PROGRAM_HEX =
-  '9aa87b6b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9dfb9f';
+export const LEZER_TESTIMONIAL_PROGRAM_HEX: string | null = null;
 
 /**
  * Pad a literal ASCII seed string to 32 bytes with trailing zeros (SPEL convention).
