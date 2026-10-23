@@ -1,0 +1,19 @@
+module lezer_wallet_provider {
+  version "0.2.0"
+  description "Lezer LEZ wallet provider: custody, caller-authenticated dApp sessions, digest-bound approvals"
+  depends []
+
+  method get_status() -> tstr description "Network, lock state and busy flag (no account data)"
+  method connect(dapp_info: tstr) -> tstr description "Queue a connection request from the calling module -> {request_id}"
+  method get_request_status(request_id: tstr) -> tstr description "Status of a request made by the calling module"
+  method disconnect(session_token: tstr) -> tstr description "Revoke the calling module's session"
+  method get_accounts(session_token: tstr) -> tstr description "Accounts shared with the calling module's session"
+  method get_balance(session_token: tstr, account_id: tstr) -> tstr description "Native balance; private accounts need an explicit grant"
+  method get_receive_address(session_token: tstr, account_id: tstr) -> tstr description "Receive address of a shared private account"
+  method propose_transaction(session_token: tstr, intent_json: tstr) -> tstr description "Queue a transaction for user approval -> {request_id, summary}"
+  method wallet_call(op_json: tstr) -> tstr description "Privileged wallet operation; accepted only from lezer_wallet_ui"
+  method poll_events() -> tstr description "Drain queued events (fallback for hosts without event delivery)"
+
+  event approvalRequested(requestId: tstr, payload: tstr)
+  event requestResolved(requestId: tstr, payload: tstr)
+}

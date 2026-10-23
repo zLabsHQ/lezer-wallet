@@ -1,0 +1,20 @@
+[package]
+name = "lezer_wallet_provider"
+version = "0.2.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# Standalone crate built by logos-module-builder (codegen.rust); not a workspace member.
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# Git dependency: the builder copies only this crate into the Nix sandbox, so in-repo
+# path deps would not resolve there. Local development uses the [patch] in
+# ../.cargo/config.toml. Cargo.lock (required by the builder) pins the exact commit.
+lezer-provider = { git = "https://github.com/zLabsHQ/lezer-wallet", branch = "main" }
+serde_json = "1"
+# Staged by logos-module-builder (`rust-sdk-src`) so the runtime matches the generator.
+logos-rust-sdk = { path = "../logos-rust-sdk-src" }

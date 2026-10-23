@@ -1,0 +1,2 @@
+[patch."https://github.com/zLabsHQ/lezer-wallet"]
+lezer-provider = { path = "../../crates/lezer-provider" }
