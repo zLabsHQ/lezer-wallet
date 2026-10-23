@@ -1,10 +1,10 @@
 /**
- * Live 150-Testimonial 16-Shard Inspector & 10-dApp Ecosystem Showcase (`apps/lezer-portal/src/app/adoption/page.tsx`).
+ * Adoption dashboard config. Live numbers come from `lezer verify-adoption`, which reads the
+ * testimonial program's index pages directly from the sequencer.
  */
 export const ADOPTION_DASHBOARD_CONFIG = {
-  submissionId: 'lp0021-lezer',
-  shardCount: 16,
-  maxEntriesPerPage: 32,
+  indexBuckets: 16,
+  maxEntriesPerPage: 64,
   requiredDistinctTestimonials: 150,
   requiredSustainedMonths: 2,
   requiredMonthlyMinimum: 30,
