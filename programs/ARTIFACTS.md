@@ -1,6 +1,79 @@
-# Deployed On-Chain SPEL Program Artifacts (`programs/ARTIFACTS.md`)
+# Lezer Program Artifacts
 
-| Program | Program Name | Canonical 64-Hex Image ID (`ProgramId`) | Logos Storage IDL CID | Logos Storage Source CID | Self-Registered in LP-0023? |
-| :--- | :--- | :--- | :--- | :--- | :---: |
-| `programs/testimonial` | `lezer_testimonial` | `9aa87b6b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9dfb9f` | `zDvZRwzm9t9ha78yTestimonialIdlV1` | `zDvZRwzm9t9ha78yTestimonialSrcV1` | Yes (`kind = 0`) |
-| `programs/registry` | `lezer_registry` | `be6cd0c3c15e6d6236cadf3af0eb63332473f223c0713256f7a5b83e0fac2cf5` | `zDvZRwzm9t9ha78yRegistryIdlV1` | `zDvZRwzm9t9ha78yRegistrySrcV1` | Yes (`kind = 0`, self-registered) |
+Every entry here is reproducible: rebuild the guest binary with Docker and compare the image id.
+
+## lezer_testimonial
+
+LP-0021 testimonial program (`programs/testimonial`).
+
+| Field | Value |
+| :--- | :--- |
+| Source | `programs/testimonial/{core,guest}` |
+| Guest binary | `lezer_testimonial.bin` (387,528 bytes) |
+| Image ID | `912c3b34a8e58def7000f2c64bd7e6fd0eed9854ee922c220f9587828806e74b` (v2, adds `RegisterSelf`) |
+| Build | `RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build --manifest-path programs/testimonial/Cargo.toml -p lezer_testimonial` |
+
+Deployments (program account ids — verify with `lezer program image-id` and `getProgramIds`/`getAccountView`):
+
+| Network | Program account id | Deployed |
+| :--- | :--- | :--- |
+| localnet (standalone v0.3.1 debug genesis) | `Public/9cn1zB8UxQLDYpEbkdCEVJvZdvASZUmNhDXxUuXMH9Y7` | v2; also registered itself in `lezer_registry` |
+| localnet (v1, no RegisterSelf) | `Public/85YmBk7v6keCoRVMiGpCv8M5LF83KMxx799p98gNLiMh` | superseded |
+| testnet (`https://testnet.lez.logos.co`) | — | not yet deployed (needs funded account) |
+
+Rebuild + deploy yourself:
+
+```bash
+RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build \
+  --manifest-path programs/testimonial/Cargo.toml -p lezer_testimonial
+lezer program image-id programs/testimonial/target/riscv32im-risc0-zkvm-elf/docker/lezer_testimonial.bin
+lezer program deploy programs/testimonial/target/.../lezer_testimonial.bin --payer <funded>
+```
+
+## lezer_registry (LP-0023)
+
+On-chain program directory (`programs/registry`). Registration is a **chained call**: a
+program's own plan emits `ChainedCall` to the registry, which records
+`caller_account_id` as the key — a signer cannot forge a listing for someone else's program.
+Entries live in registry-shard PDAs (`entry_seed`); enumeration walks 16 deterministic index
+buckets by exact-account reads.
+
+| Field | Value |
+| :--- | :--- |
+| Source | `programs/registry/{core,guest}` |
+| Guest binary | `lezer_registry.bin` (387,072 bytes) |
+| Image ID | `66ac37a3840cfff5f69fead3f3404ddc9707cd7e807d21c76e328c4cdc5ffb2c` |
+| Build | `RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build --manifest-path programs/registry/Cargo.toml -p lezer_registry` |
+
+| Network | Program account id | Deployed |
+| :--- | :--- | :--- |
+| localnet | `Public/GgDbNLcWFWQ8VTZnVzVP9FnX7vKBFA8SrsKSh3LkxB5j` | holds self-registrations by `lezer_testimonial` + `lezer_token` (`lezer registry list`) |
+
+Our registerable programs accept a `RegisterSelf(RegisterSelfParams)` instruction that emits
+the chained call; `lezer registry register --subject <name>` builds it.
+
+The old `experimental/registry-program` scaffolding (pre-0.3 model) stays as reference only.
+
+## lezer_token
+
+Fungible token program (`programs/token`): definition shard on a creator-chosen account,
+per-(token, owner) holding PDAs, plan-side PDA derivation, apply-side supply/authority checks.
+Define/mint/transfer/burn/set-authority are real program calls; balances are exact-account
+reads — there is no local token ledger.
+
+| Field | Value |
+| :--- | :--- |
+| Source | `programs/token/{core,guest}` |
+| Guest binary | `lezer_token.bin` (420,324 bytes) |
+| Image ID | `581afed957bfc437e8bfb2cd268bdc5428fefd6a6c41a4d88b078c7fd1bbf066` (v2, adds `RegisterSelf`) |
+| Build | `RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build --manifest-path programs/token/Cargo.toml -p lezer_token` |
+
+| Network | Program account id | Deployed |
+| :--- | :--- | :--- |
+| localnet | `Public/Boo4RvaEDy4fG6UpB8a2bd4GaEWp8Gvr1YLyKqzDij8r` | full lifecycle verified; self-registered in `lezer_registry` |
+| localnet (v1) | `Public/8vrFT3VwuDFLBoiLYt2tdRh7dKdWGxRw4ti6Bk1aVhL7` | superseded |
+
+Note: guests cannot observe signatures — authorization is expressed by which accounts sign the
+transaction (`is_authorized`), and a reverted guest apply still lands in a block as a
+charged-revert, so the wallet pre-checks shards before signing. "Included" therefore means
+"executed" for all `lezer token` commands.
