@@ -1,0 +1,19 @@
+[package]
+name = "lezer_registry"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# Built reproducibly with:
+#   RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build \
+#     --manifest-path programs/registry/Cargo.toml -p lezer_registry
+
+[[bin]]
+name = "lezer_registry"
+path = "src/main.rs"
+
+[dependencies]
+registry_core = { path = "../core" }
+borsh = { version = "1", features = ["derive"] }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1" }
+risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
