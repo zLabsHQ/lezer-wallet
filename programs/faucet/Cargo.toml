@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["core", "guest"]
+
+[patch.crates-io]
+keccak = { git = "https://github.com/logos-blockchain/sponges", rev = "3a56e99771beedf04946eab21a4a62adc2951377" }
