@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tooling/release-catalog.sh — Validates `logos-repo.json` and all 4 Basecamp `.lgx` module manifests
+# tooling/release-catalog.sh — Validates `logos-repo.json` and all Basecamp `.lgx` module manifests
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ import pathlib
 root = pathlib.Path(".")
 catalog = json.loads((root / "logos-repo.json").read_text())
 assert catalog["schemaVersion"] == 1
-assert len(catalog["modules"]) == 4
+assert len(catalog["modules"]) == 3
 
 for mod in catalog["modules"]:
     meta_path = root / mod["metadata"]
@@ -22,5 +22,5 @@ for mod in catalog["modules"]:
     assert meta["name"] == mod["name"]
     assert meta["type"] == mod["type"]
 
-print("  [PASS] logos-repo.json and all 4 Basecamp module manifests validated.")
+print("  [PASS] logos-repo.json and all Basecamp module manifests validated.")
 PY

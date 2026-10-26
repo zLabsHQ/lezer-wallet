@@ -2,34 +2,197 @@
   "schema_version": 1,
   "description": "Canonical Lezer Wallet Unified Error Taxonomy (LZR-1xxx to LZR-6xxx)",
   "vectors": [
-    { "code": "LZR-1001", "name": "VaultUninitialized", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-1002", "name": "VaultLocked", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-1003", "name": "InvalidPassword", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-1004", "name": "InvalidMnemonic", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-1005", "name": "MigrationFailed", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-1006", "name": "VaultCorrupted", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-1007", "name": "DuplicateAccountLabel", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-1008", "name": "AccountNotFound", "category": "vault_and_auth", "retryable": false },
-    { "code": "LZR-2001", "name": "SessionExpiredOrInvalid", "category": "session_and_acl", "retryable": false },
-    { "code": "LZR-2002", "name": "AccountNotAuthorized", "category": "session_and_acl", "retryable": false },
-    { "code": "LZR-2003", "name": "PrivateBalanceForbidden", "category": "session_and_acl", "retryable": false },
-    { "code": "LZR-2004", "name": "UiControlTokenInvalid", "category": "session_and_acl", "retryable": false },
-    { "code": "LZR-3001", "name": "UserRejected", "category": "approval_and_simulation", "retryable": false },
-    { "code": "LZR-3002", "name": "ProposalExpired", "category": "approval_and_simulation", "retryable": false },
-    { "code": "LZR-3003", "name": "SimulationReverted", "category": "approval_and_simulation", "retryable": false },
-    { "code": "LZR-3004", "name": "UnacknowledgedRiskGate", "category": "approval_and_simulation", "retryable": false },
-    { "code": "LZR-3005", "name": "ProposalDigestMismatch", "category": "approval_and_simulation", "retryable": false },
-    { "code": "LZR-4001", "name": "SequencerUnreachable", "category": "network_and_sequencer", "retryable": true },
-    { "code": "LZR-4002", "name": "DisallowedEndpointBlocked", "category": "network_and_sequencer", "retryable": false },
-    { "code": "LZR-4003", "name": "ShardContentionExhausted", "category": "network_and_sequencer", "retryable": true },
-    { "code": "LZR-4004", "name": "FaucetCooldownOrDepleted", "category": "network_and_sequencer", "retryable": false },
-    { "code": "LZR-5001", "name": "ProverQueueBusy", "category": "prover_and_crypto", "retryable": true },
-    { "code": "LZR-5002", "name": "Risc0WitnessFailed", "category": "prover_and_crypto", "retryable": false },
-    { "code": "LZR-5003", "name": "RapidsnarkProofFailed", "category": "prover_and_crypto", "retryable": false },
-    { "code": "LZR-5004", "name": "NullifierLockedInFlight", "category": "prover_and_crypto", "retryable": false },
-    { "code": "LZR-6001", "name": "RegistryEntryNotFound", "category": "registry_and_storage", "retryable": false },
-    { "code": "LZR-6002", "name": "IdlFetchOrParseFailed", "category": "registry_and_storage", "retryable": false },
-    { "code": "LZR-6003", "name": "BytecodeVerificationMismatch", "category": "registry_and_storage", "retryable": false },
-    { "code": "LZR-6004", "name": "StorageNodeUnreachable", "category": "registry_and_storage", "retryable": true }
+    {
+      "code": "LZR-1001",
+      "name": "VaultUninitialized",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1002",
+      "name": "VaultLocked",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1003",
+      "name": "InvalidPassword",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1004",
+      "name": "InvalidMnemonic",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1005",
+      "name": "MigrationFailed",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1006",
+      "name": "VaultCorrupted",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1007",
+      "name": "DuplicateAccountLabel",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1008",
+      "name": "AccountNotFound",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-1009",
+      "name": "VaultAlreadyExists",
+      "category": "vault_and_auth",
+      "retryable": false
+    },
+    {
+      "code": "LZR-2001",
+      "name": "SessionExpiredOrInvalid",
+      "category": "session_and_acl",
+      "retryable": false
+    },
+    {
+      "code": "LZR-2002",
+      "name": "AccountNotAuthorized",
+      "category": "session_and_acl",
+      "retryable": false
+    },
+    {
+      "code": "LZR-2003",
+      "name": "PrivateBalanceForbidden",
+      "category": "session_and_acl",
+      "retryable": false
+    },
+    {
+      "code": "LZR-2004",
+      "name": "UiControlTokenInvalid",
+      "category": "session_and_acl",
+      "retryable": false
+    },
+    {
+      "code": "LZR-3001",
+      "name": "UserRejected",
+      "category": "approval_and_simulation",
+      "retryable": false
+    },
+    {
+      "code": "LZR-3002",
+      "name": "ProposalExpired",
+      "category": "approval_and_simulation",
+      "retryable": false
+    },
+    {
+      "code": "LZR-3003",
+      "name": "SimulationReverted",
+      "category": "approval_and_simulation",
+      "retryable": false
+    },
+    {
+      "code": "LZR-3004",
+      "name": "UnacknowledgedRiskGate",
+      "category": "approval_and_simulation",
+      "retryable": false
+    },
+    {
+      "code": "LZR-3005",
+      "name": "ProposalDigestMismatch",
+      "category": "approval_and_simulation",
+      "retryable": false
+    },
+    {
+      "code": "LZR-3006",
+      "name": "TransactionRejected",
+      "category": "approval_and_simulation",
+      "retryable": false
+    },
+    {
+      "code": "LZR-4001",
+      "name": "SequencerUnreachable",
+      "category": "network_and_sequencer",
+      "retryable": true
+    },
+    {
+      "code": "LZR-4002",
+      "name": "DisallowedEndpointBlocked",
+      "category": "network_and_sequencer",
+      "retryable": false
+    },
+    {
+      "code": "LZR-4003",
+      "name": "ShardContentionExhausted",
+      "category": "network_and_sequencer",
+      "retryable": true
+    },
+    {
+      "code": "LZR-4004",
+      "name": "FaucetCooldownOrDepleted",
+      "category": "network_and_sequencer",
+      "retryable": false
+    },
+    {
+      "code": "LZR-5001",
+      "name": "ProverQueueBusy",
+      "category": "prover_and_crypto",
+      "retryable": true
+    },
+    {
+      "code": "LZR-5002",
+      "name": "Risc0WitnessFailed",
+      "category": "prover_and_crypto",
+      "retryable": false
+    },
+    {
+      "code": "LZR-5003",
+      "name": "RapidsnarkProofFailed",
+      "category": "prover_and_crypto",
+      "retryable": false
+    },
+    {
+      "code": "LZR-5004",
+      "name": "NullifierLockedInFlight",
+      "category": "prover_and_crypto",
+      "retryable": false
+    },
+    {
+      "code": "LZR-6001",
+      "name": "RegistryEntryNotFound",
+      "category": "registry_and_storage",
+      "retryable": false
+    },
+    {
+      "code": "LZR-6002",
+      "name": "IdlFetchOrParseFailed",
+      "category": "registry_and_storage",
+      "retryable": false
+    },
+    {
+      "code": "LZR-6003",
+      "name": "BytecodeVerificationMismatch",
+      "category": "registry_and_storage",
+      "retryable": false
+    },
+    {
+      "code": "LZR-6004",
+      "name": "StorageNodeUnreachable",
+      "category": "registry_and_storage",
+      "retryable": true
+    },
+    {
+      "code": "LZR-6005",
+      "name": "ProgramNotDeployed",
+      "category": "registry_and_storage",
+      "retryable": false
+    }
   ]
 }

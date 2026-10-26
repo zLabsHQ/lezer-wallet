@@ -17,7 +17,7 @@ jobs:
       - name: Validate Basecamp Module Catalog (logos-repo.json)
         run: ./tooling/release-catalog.sh
 
-  rust-and-conformance:
+  rust-unit:
     strategy:
       fail-fast: false
       matrix:
@@ -34,11 +34,65 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libclang-dev
       - name: Clippy Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Run SPEL Guest Program Tests
+      - name: Guest program unit tests (testimonial & token)
         run: |
           cargo test --manifest-path programs/testimonial/Cargo.toml
+          cargo test --manifest-path programs/token/Cargo.toml
           cargo test --manifest-path programs/registry/Cargo.toml
-      - name: Run Workspace Conformance & Release Gate Suite (RC-01, RC-02, RC-03)
+      - name: Workspace tests (unit + conformance; sequencer E2E skips without env)
         run: cargo test --workspace
-      - name: Run Clean-Room Evaluator Demo Suite
-        run: ./tooling/demo.sh
+
+  e2e-sequencer:
+    # Real v0.3.1 standalone sequencer: public transfer, program deploy, testimonial,
+    # token lifecycle. Private-proof leg is off (minutes of proving; run manually with
+    # LEZER_E2E_PRIVATE=1).
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libclang-dev protobuf-compiler
+      - name: Fetch LEZ v0.3.1 upstream (sequencer source)
+        run: git clone --depth 1 --branch v0.3.1 https://github.com/logos-blockchain/logos-execution-zone.git /tmp/lez
+      - name: Cache upstream build
+        uses: actions/cache@v4
+        with:
+          path: /tmp/lez/target
+          key: lez-v031-sequencer-${{ runner.os }}
+      - name: Build standalone sequencer (upstream toolchain applies)
+        run: cargo build --release --manifest-path /tmp/lez/Cargo.toml -p sequencer_service
+      - name: Start sequencer
+        run: |
+          mkdir -p /tmp/lezseq
+          nohup /tmp/lez/target/release/sequencer_service \
+            /tmp/lez/lez/sequencer/service/configs/debug/sequencer_config.json \
+            --home /tmp/lezseq --listen-address 127.0.0.1 --port 3040 \
+            > /tmp/lezseq/sequencer.log 2>&1 &
+          for i in $(seq 1 90); do
+            curl -sf http://127.0.0.1:3040 -X POST -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getLastBlockId","params":[]}' && break
+            sleep 1
+          done
+      - name: Build guest binaries (Docker, r0.1.91.1 image — reproducible)
+        run: |
+          cargo install cargo-risczero --version 3.0.5 --locked
+          cargo risczero install 2>/dev/null || true
+          RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build \
+            --manifest-path programs/testimonial/Cargo.toml -p lezer_testimonial
+          RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build \
+            --manifest-path programs/token/Cargo.toml -p lezer_token
+          RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build \
+            --manifest-path programs/registry/Cargo.toml -p lezer_registry
+      - name: Build lezer CLI
+        run: cargo build -p lezer-cli
+      - name: Run real-sequencer E2E
+        env:
+          LEZER_E2E_SEQUENCER: http://127.0.0.1:3040
+          LEZER_E2E_TESTIMONIAL_ELF: ${{ github.workspace }}/programs/testimonial/target/riscv32im-risc0-zkvm-elf/docker/lezer_testimonial.bin
+          LEZER_E2E_TOKEN_ELF: ${{ github.workspace }}/programs/token/target/riscv32im-risc0-zkvm-elf/docker/lezer_token.bin
+          LEZER_E2E_REGISTRY_ELF: ${{ github.workspace }}/programs/registry/target/riscv32im-risc0-zkvm-elf/docker/lezer_registry.bin
+        run: cargo test -p lezer-cli --test e2e_sequencer -- --nocapture
+      - name: Sequencer log on failure
+        if: failure()
+        run: tail -200 /tmp/lezseq/sequencer.log

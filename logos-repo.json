@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "name": "lezer-wallet",
   "displayName": "Lezer Wallet Suite",
-  "version": "1.0.0",
-  "description": "Native LEZ Wallet, Provider SDK, Token/ATA Manager, Faucet, and On-Chain Testimonial Suite for Logos Basecamp.",
+  "version": "0.2.0",
+  "description": "Lezer: LEZ wallet (public & private accounts), provider for Basecamp dApps, and an on-chain testimonial mini-app.",
   "author": "Lezer Team",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/zLabsHQ/lezer-wallet",
@@ -23,12 +23,6 @@
       "metadata": "modules/lezer_wallet_ui/metadata.json"
     },
     {
-      "name": "lezer_faucet_ui",
-      "path": "modules/lezer_faucet_ui",
-      "type": "ui_qml",
-      "metadata": "modules/lezer_faucet_ui/metadata.json"
-    },
-    {
       "name": "lezer_testimonial_ui",
       "path": "modules/lezer_testimonial_ui",
       "type": "ui_qml",
@@ -37,6 +31,6 @@
   ],
   "dependencies": {
     "modules": [],
-    "runtime": ["qt6.qtdeclarative", "qt6.qtwebview"]
+    "runtime": []
   }
 }

@@ -1,13 +1,11 @@
 [workspace]
 resolver = "3"
-exclude = ["third_party", "programs"]
+exclude = ["third_party", "programs", "experimental", "modules"]
 members = [
     "crates/lezer-adapter",
     "crates/lezer-core",
     "crates/lezer-cli",
-    "crates/lezer-wasm",
-    "crates/lezerd",
-    "modules/lezer_wallet_provider",
+    "crates/lezer-provider",
 ]
 
 [workspace.package]
@@ -39,22 +37,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 zeroize = { version = "1", features = ["derive"] }
 
-# Upstream LEZ wallet engine — pinned to the deployed public testnet tag.
-common = { git = "https://github.com/TerexitariusStomp/logos-execution-zone", branch = "v0.2.4-keycard-gate" }
-wallet = { git = "https://github.com/TerexitariusStomp/logos-execution-zone", branch = "v0.2.4-keycard-gate", default-features = false }
-lee = { git = "https://github.com/TerexitariusStomp/logos-execution-zone", branch = "v0.2.4-keycard-gate" }
-lee_core = { git = "https://github.com/TerexitariusStomp/logos-execution-zone", branch = "v0.2.4-keycard-gate" }
-sequencer_service_rpc = { git = "https://github.com/TerexitariusStomp/logos-execution-zone", branch = "v0.2.4-keycard-gate", features = ["client"] }
-system_accounts = { git = "https://github.com/TerexitariusStomp/logos-execution-zone", branch = "v0.2.4-keycard-gate" }
-programs = { git = "https://github.com/TerexitariusStomp/logos-execution-zone", branch = "v0.2.4-keycard-gate", features = ["artifacts"] }
+# Upstream LEZ engine — official repository, pinned to the tag the public
+# testnet (https://testnet.lez.logos.co) runs. Verified by RPC surface probe.
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1" }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1" }
+common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1" }
+key_protocol = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1" }
+sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1", features = ["client"] }
+programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.1" }
 
 [workspace.lints.rust]
 
 [workspace.lints.clippy]
-
-[patch."https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark.git"]
-rust-rapidsnark = { git = "https://github.com/TerexitariusStomp/logos-blockchain-rust-rapidsnark.git", rev = "3e69004e2b3f920d83eebb70e348a3d70fbdc270" }
-
-[patch.crates-io]
-risc0-zkvm = { git = "https://github.com/TerexitariusStomp/risc0", rev = "32e0fdc36d8dc40f5fbe3dded56e57a8bd5916f4" }
-risc0-binfmt = { git = "https://github.com/TerexitariusStomp/risc0", rev = "32e0fdc36d8dc40f5fbe3dded56e57a8bd5916f4" }

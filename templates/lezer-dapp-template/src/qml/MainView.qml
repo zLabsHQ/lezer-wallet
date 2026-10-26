@@ -2,46 +2,51 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Worked example Basecamp `ui_qml` dApp consuming `lezer_wallet_provider`:
-// 1. Connect Wallet -> 2. Read Authorized Account & Balance -> 3. Propose Decoded Transaction
-Item {
-    id: starterRoot
-    implicitWidth: 800
-    implicitHeight: 560
-    Layout.fillWidth: true
-    Layout.fillHeight: true
+// Starter Basecamp ui_qml dApp using the Lezer wallet:
+// connect → read a shared account's balance → propose a transfer the user approves in Lezer.
+Rectangle {
+    id: root
+    implicitWidth: 720
+    implicitHeight: 480
+    color: "#0f1115"
+
+    property string log: ""
+    function append(line) { log = line + "\n" + log }
 
     LezerProvider {
         id: lezer
+        displayName: "Lezer dApp Starter"
+        onConnected: (accounts) => {
+            root.append("connected: " + accounts.join(", "))
+            fromBox.model = accounts
+        }
+        onProposalResolved: (receipt) => root.append("tx " + receipt.tx_hash + " → " + receipt.status.state)
+        onFailed: (code, message) => root.append("error " + code + ": " + message)
     }
 
     ColumnLayout {
         anchors.fill: parent
-        spacing: 12
+        anchors.margins: 16
+        spacing: 10
 
-        Label {
-            text: "Lezer Basecamp dApp Starter Template"
-            font.pixelSize: 18
-            font.bold: true
-        }
+        Label { text: "Lezer dApp starter"; color: "#e8eaed"; font.pixelSize: 18; font.bold: true }
+        Button { text: lezer.busy ? "Waiting for the user…" : "1. Connect"; enabled: !lezer.busy && !lezer.sessionToken; onClicked: lezer.connect() }
 
+        ComboBox { id: fromBox; Layout.fillWidth: true; model: [] }
         Button {
-            text: "1. Connect to Lezer Wallet"
-            onClicked: lezer.connectDapp(JSON.stringify({
-                moduleName: "lezer_dapp_starter",
-                displayName: "Lezer dApp Starter",
-                version: "0.1.0"
-            }))
+            text: "2. Read balance"
+            enabled: fromBox.currentText.length > 0
+            onClicked: lezer.getBalance(fromBox.currentText, function (b) { root.append(b.account_id + ": " + b.balance + " (" + b.source + ")") })
         }
 
+        TextField { id: toField; Layout.fillWidth: true; placeholderText: "Recipient (Public/…, or a lezer:priv1… receive address)" }
+        TextField { id: amountField; Layout.fillWidth: true; placeholderText: "Amount in atomic units (1 token = 1000000000)" }
         Button {
-            text: "2. Propose Sample Native Transfer (10 LEZ)"
-            onClicked: lezer.proposeTransaction(JSON.stringify({
-                kind: "native_transfer",
-                from: "Main Public",
-                to: "Main Public",
-                amount: "10"
-            }))
+            text: "3. Propose transfer"
+            enabled: !lezer.busy && fromBox.currentText.length > 0 && toField.text.length > 0 && /^[1-9]\d*$/.test(amountField.text)
+            onClicked: lezer.propose({ kind: "native_transfer", from: fromBox.currentText, to: toField.text.trim(), amount: amountField.text })
         }
+
+        TextArea { Layout.fillWidth: true; Layout.fillHeight: true; readOnly: true; text: root.log; color: "#9aa0a6"; font.family: "Menlo" }
     }
 }

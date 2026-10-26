@@ -55,12 +55,12 @@ done
 pass "All required root workspace, crate, and module manifest files exist"
 
 # 2. Boundary Rule 1: `crates/lezer-core/Cargo.toml` and `crates/lezer-cli/Cargo.toml`
-#    and `modules/lezer_wallet_provider/Cargo.toml` must NOT depend on upstream LEZ crates.
+#    and `modules/lezer_wallet_provider/rust-lib/Cargo.toml` must NOT depend on upstream LEZ crates.
 FORBIDDEN_UPSTREAM_DEPS='^(wallet|lee|lee_core|sequencer_service_rpc|system_accounts|programs)\s*[=.]'
 for manifest in \
   "crates/lezer-core/Cargo.toml" \
   "crates/lezer-cli/Cargo.toml" \
-  "modules/lezer_wallet_provider/Cargo.toml"
+  "modules/lezer_wallet_provider/rust-lib/Cargo.toml"
 do
   if grep -Eq "$FORBIDDEN_UPSTREAM_DEPS" "$manifest"; then
     fail "$manifest directly depends on upstream LEZ crates (only crates/lezer-adapter is permitted)"
