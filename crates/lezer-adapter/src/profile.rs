@@ -15,11 +15,19 @@ pub const DEFAULT_LOCALNET_SEQUENCER_URL: &str = "http://127.0.0.1:3040";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LezerDeployments {
     pub testimonial: Option<String>,
+    pub registry: Option<String>,
+    pub token: Option<String>,
+    pub faucet: Option<String>,
 }
 
 impl LezerDeployments {
     fn from_env() -> Self {
-        Self { testimonial: env_nonempty("LEZER_TESTIMONIAL_PROGRAM") }
+        Self {
+            testimonial: env_nonempty("LEZER_TESTIMONIAL_PROGRAM"),
+            registry: env_nonempty("LEZER_REGISTRY_PROGRAM"),
+            token: env_nonempty("LEZER_TOKEN_PROGRAM"),
+            faucet: env_nonempty("LEZER_FAUCET_PROGRAM"),
+        }
     }
 }
 

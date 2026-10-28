@@ -7,6 +7,7 @@
 
 pub mod codecs;
 pub mod engine;
+pub mod faucet;
 pub mod profile;
 pub mod programs;
 pub mod registry;
@@ -22,12 +23,17 @@ pub use engine::{
     PrivateReceiveKeys, TransferMode, TransferTarget, TxReceipt, TxStatus, decode_receive_address,
     encode_receive_address, native_token_program_id, privacy_circuit_id, parse_public_id, parse_target,
 };
+pub use faucet::{FaucetStatus, faucet_status_rpc, faucet_vault_id};
+pub use faucet_core::DEFAULT_DRIP_AMOUNT;
 pub use profile::{
     DEFAULT_LOCALNET_SEQUENCER_URL, DEFAULT_TESTNET_SEQUENCER_URL, LezerDeployments,
     NetworkProfile,
 };
 pub use programs::{AdoptionReport, DeployedProgram, TestimonialEntry, image_id_hex, verify_adoption};
-pub use registry::{RegistryEntry, RegistryReport, first_page_with_room_rpc, list_registry, register_self_instruction};
+pub use registry::{
+    RegistryEntry, RegistryReport, first_page_with_room_rpc, list_registry,
+    lookup_registry_entry, register_self_instruction,
+};
 pub use token::{TokenInfo, token_balance_rpc, token_info_rpc};
 pub use rpc::{AllowedEndpointsGuard, LezRpcClient, RpcAccountState};
 

@@ -182,6 +182,34 @@ pub async fn list_registry(profile: &NetworkProfile, registry_id: &str) -> Resul
     })
 }
 
+/// O(1) single-account lookup of `program_id`'s registration entry in `registry_id`.
+pub async fn lookup_registry_entry(
+    profile: &NetworkProfile,
+    registry_id: &str,
+    program_id: &str,
+) -> Result<Option<RegistryEntry>> {
+    AllowedEndpointsGuard::from_profile(profile).check_url(&profile.sequencer_url)?;
+    let client = SequencerClientBuilder::default()
+        .build(profile.sequencer_url.as_str())
+        .context("invalid sequencer URL")?;
+    let registry = parse_public_id(registry_id)?;
+    let subject = parse_public_id(program_id)?;
+    let entry_account = pda(&registry, entry_seed(subject.value()));
+    let raw = read_shard(&client, entry_account, &registry).await?;
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let e = Entry::try_from_slice(&raw)
+        .map_err(|err| anyhow!("malformed registry entry for {subject}: {err}"))?;
+    Ok(Some(RegistryEntry {
+        program_id: format!("Public/{subject}"),
+        name: e.name,
+        source_url: e.source_url,
+        commit: e.commit,
+        version: e.version,
+    }))
+}
+
 /// Serialize a `RegisterSelf` instruction for a supported subject program.
 pub fn register_self_instruction(
     subject: &str,
@@ -190,6 +218,7 @@ pub fn register_self_instruction(
     let ix = match subject {
         "lezer_testimonial" => Program::serialize_instruction(testimonial_core::Instruction::RegisterSelf(params)),
         "lezer_token" => Program::serialize_instruction(token_core::Instruction::RegisterSelf(params)),
+        "lezer_faucet" => Program::serialize_instruction(faucet_core::Instruction::RegisterSelf(params)),
         other => bail!("program '{other}' does not support self-registration (no RegisterSelf instruction)"),
     };
     ix.map_err(|e| anyhow!("{e:?}"))

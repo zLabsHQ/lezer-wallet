@@ -83,6 +83,9 @@ pub enum WalletOp {
     // ── LP-0023 registry ──
     RegistryList,
     RegistryRegister { subject: String, name: String, source_url: String, commit: String, version: String, payer: String },
+    // ── LP-0021 faucet ──
+    FaucetStatus { recipient: Option<String> },
+    FaucetClaim { recipient: String, payer: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -470,6 +473,16 @@ impl Provider {
                 Ok(json!({ "job_id": self.spawn_job(format!("register {subject}"), None, move |w| Box::pin(async move {
                     let program = w.registry_program().ok_or_else(|| LezerError::new(ErrorCode::ProgramNotDeployed, String::from("no lezer_registry deployment")))?;
                     w.register_program(&program, &subject, &name, &source_url, &commit, &version, &payer).await.map(|r| json!(r))
+                })) }))
+            }
+            WalletOp::FaucetStatus { recipient } => self.with_engine(async |w| {
+                let program = w.faucet_program().ok_or_else(|| LezerError::new(ErrorCode::ProgramNotDeployed, String::from("no lezer_faucet deployment")))?;
+                w.faucet_status(&program, recipient.as_deref()).await.map(|s| json!(s))
+            }),
+            WalletOp::FaucetClaim { recipient, payer } => {
+                Ok(json!({ "job_id": self.spawn_job("faucet claim".into(), None, move |w| Box::pin(async move {
+                    let program = w.faucet_program().ok_or_else(|| LezerError::new(ErrorCode::ProgramNotDeployed, String::from("no lezer_faucet deployment")))?;
+                    w.faucet_claim(&program, &recipient, payer.as_deref()).await.map(|r| json!(r))
                 })) }))
             }
             WalletOp::Job { job_id } => self

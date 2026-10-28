@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
-use crate::intent::{TxIntent, summarize};
+use crate::intent::{SummarizeContext, TxIntent, summarize};
 use crate::errors::{ErrorCode, LezerError, LezerResult};
 use crate::summary::{ApproveDecision, Precheck, TransactionSummary};
 use crate::vault::{PermissionScope, SessionGrant};
@@ -198,20 +198,30 @@ impl ApprovalBroker {
         session: &SessionGrant,
         intent: TxIntent,
         precheck: Precheck,
-        testimonial_program: Option<&str>,
+        ctx: SummarizeContext,
         now_unix: u64,
     ) -> LezerResult<PendingProposal> {
         if now_unix >= session.expires_at {
             return Err(LezerError::new(ErrorCode::SessionExpiredOrInvalid, "session token has expired"));
         }
         match &intent {
-            TxIntent::NativeTransfer { .. } if intent.amount().is_none_or(|a| a == 0) => {
+            TxIntent::NativeTransfer { .. }
+            | TxIntent::TokenTransfer { .. }
+            | TxIntent::TokenMint { .. }
+            | TxIntent::TokenBurn { .. }
+                if intent.amount().is_none_or(|a| a == 0) =>
+            {
                 return Err(LezerError::new(ErrorCode::SimulationReverted, "amount must be a positive integer"));
             }
-            TxIntent::SubmitTestimonial { .. } if testimonial_program.is_none() => {
-                return Err(LezerError::new(ErrorCode::ProgramNotDeployed, "the testimonial program is not deployed on this network"));
-            }
             _ => {}
+        }
+        if let Some(prog_name) = intent.program_binary_name()
+            && ctx.target_program_id.is_none()
+        {
+            return Err(LezerError::new(
+                ErrorCode::ProgramNotDeployed,
+                format!("program '{prog_name}' is not deployed on this network"),
+            ));
         }
         let signing_account = intent.signing_account();
         let has_propose_scope = session.scopes.iter().any(|s| {
@@ -236,9 +246,7 @@ impl ApprovalBroker {
             &session.dapp_name,
             &intent,
             precheck,
-            &lezer_adapter::native_token_program_id(),
-            Some(lezer_adapter::DEFAULT_MAX_FEE),
-            testimonial_program,
+            &ctx,
         );
 
         let proposal = PendingProposal {
@@ -463,7 +471,11 @@ mod tests {
                     amount: "25".to_string(),
                 },
                 Precheck::Passed { available: "100".to_string() },
-                None,
+                SummarizeContext {
+                    native_token_program_id: lezer_adapter::native_token_program_id(),
+                    max_fee: Some(lezer_adapter::DEFAULT_MAX_FEE),
+                    ..Default::default()
+                },
                 1010,
             )
             .unwrap();

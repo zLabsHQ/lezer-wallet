@@ -41,3 +41,4 @@ risc0-binfmt = "3.0.2"
 testimonial_core = { path = "../../programs/testimonial/core" }
 token_core = { path = "../../programs/token/core" }
 registry_core = { path = "../../programs/registry/core" }
+faucet_core = { path = "../../programs/faucet/core" }

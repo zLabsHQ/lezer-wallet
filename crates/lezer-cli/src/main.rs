@@ -82,6 +82,11 @@ enum Command {
         #[command(subcommand)]
         sub: TokenCmd,
     },
+    /// LP-0021 on-chain native LEZ faucet (`lezer_faucet` program).
+    Faucet {
+        #[command(subcommand)]
+        sub: FaucetCmd,
+    },
     /// Send native tokens. Mode (public/shielded/deshielded/private) follows from the accounts.
     Send {
         #[arg(long)]
@@ -261,6 +266,32 @@ enum TokenCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum FaucetCmd {
+    /// Print the faucet treasury PDA (`Public/..`) to send native LEZ into when funding the faucet.
+    Vault {
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Query faucet treasury balance and (optionally) whether an account has already claimed.
+    Status {
+        #[arg(long)]
+        recipient: Option<String>,
+        #[arg(long)]
+        program: Option<String>,
+    },
+    /// Claim 50 LEZ from the on-chain faucet into `--recipient` (enforces 1-per-account rate limit).
+    Claim {
+        #[arg(long, default_value = "main")]
+        recipient: String,
+        /// Optional fee payer (defaults to `--recipient` if funded, or any funded public account).
+        #[arg(long)]
+        payer: Option<String>,
+        #[arg(long)]
+        program: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum TestimonialCmd {
     /// Publish a testimonial (public, permanent, linked to the author account).
     Submit {
@@ -368,6 +399,13 @@ fn no_token_program() -> LezerError {
     LezerError::new(
         ErrorCode::ProgramNotDeployed,
         "no lezer_token program deployed from this wallet (run `lezer program deploy lezer_token.bin` or pass --program)",
+    )
+}
+
+fn no_faucet_program() -> LezerError {
+    LezerError::new(
+        ErrorCode::ProgramNotDeployed,
+        "no lezer_faucet program deployed from this wallet (run `lezer program deploy lezer_faucet.bin` or pass --program)",
     )
 }
 
@@ -511,6 +549,52 @@ async fn run(cli: Cli, out: &mut Output) -> LezerResult<()> {
                     let new_auth = (new != "none").then_some(new.as_str());
                     let r = w.token_set_authority(&program, &token, &authority, &payer, new_auth).await?;
                     emit_receipt(out, "Authority change", &r);
+                }
+            }
+        }
+        Command::Faucet { sub } => {
+            let resolve = |w: &WalletEngine, program: Option<String>| -> LezerResult<String> {
+                program
+                    .or_else(|| w.faucet_program())
+                    .or_else(|| WalletEngine::stored_deployment(&home, "lezer_faucet"))
+                    .ok_or_else(no_faucet_program)
+            };
+            match sub {
+                FaucetCmd::Vault { program } => {
+                    let program = resolve(&w, program)?;
+                    let vault = lezer_adapter::faucet_vault_id(&program)
+                        .map_err(|e| LezerError::new(ErrorCode::InvalidAddress, e.to_string()))?;
+                    out.emit(&vault, &json!({ "faucet_program_id": program, "vault_account_id": vault }));
+                }
+                FaucetCmd::Status { recipient, program } => {
+                    let program = resolve(&w, program)?;
+                    let resolved_rec = match recipient {
+                        Some(r) if r.starts_with("Public/") => Some(r),
+                        Some(r) => {
+                            let _ = unlock(&mut w);
+                            w.resolve_account(&r).ok().or(Some(r))
+                        }
+                        None => None,
+                    };
+                    let st = w.faucet_status(&program, resolved_rec.as_deref()).await?;
+                    out.emit(
+                        &format!(
+                            "Faucet {} (vault {})\n  vault balance: {}  drip: {}\n  recipient: {}  already_claimed: {}",
+                            st.faucet_program_id,
+                            st.vault_account_id,
+                            st.vault_balance,
+                            st.drip_amount,
+                            st.recipient.as_deref().unwrap_or("—"),
+                            st.already_claimed
+                        ),
+                        &serde_json::to_value(&st).unwrap_or_default(),
+                    );
+                }
+                FaucetCmd::Claim { recipient, payer, program } => {
+                    unlock(&mut w)?;
+                    let program = resolve(&w, program)?;
+                    let r = w.faucet_claim(&program, &recipient, payer.as_deref()).await?;
+                    emit_receipt(out, "Faucet claim", &r);
                 }
             }
         }

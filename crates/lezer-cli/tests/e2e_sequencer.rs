@@ -252,4 +252,33 @@ fn e2e_wallet_lifecycle_transfers_and_testimonials() {
             assert!(list["entries"][0]["program_id"].as_str().unwrap().starts_with("Public/"));
         }
     }
+
+    if let Ok(faucet_elf) = std::env::var("LEZER_E2E_FAUCET_ELF") {
+        let d = w.ok(&["program", "deploy", &faucet_elf, "--payer", "genesis"]);
+        let faucet = d["program_id"].as_str().unwrap().to_string();
+        let vault = w.ok(&["faucet", "vault", "--program", &faucet])["vault_account_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Fund the faucet treasury PDA with 100 LEZ (2 drips).
+        assert!(included(&w.ok(&[
+            "send", "--from", "genesis", "--to", &vault, "--amount", "100000000000",
+        ])));
+
+        w.ok(&["account", "new", "public", "--label", "claimant"]);
+        assert_eq!(w.balance("claimant"), 0);
+
+        // Claim 50 LEZ into a 0-balance account (genesis automatically covers the gas fee).
+        assert!(included(&w.ok(&[
+            "faucet", "claim", "--program", &faucet, "--recipient", "claimant",
+        ])));
+        assert_eq!(w.balance("claimant"), 50_000_000_000);
+
+        // Duplicate claim is rejected locally via pre-check (no charged revert).
+        let dup = w
+            .run(&["faucet", "claim", "--program", &faucet, "--recipient", "claimant"], None)
+            .unwrap_err();
+        assert_eq!(dup["error"]["code"], "LZR-3006", "{dup}");
+    }
 }

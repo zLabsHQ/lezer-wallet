@@ -30,7 +30,7 @@ pub use broker::{
 };
 pub use cache::{CURRENT_CACHE_SCHEMA_VERSION, Cache};
 pub use errors::{ErrorCategory, ErrorCode, ErrorEnvelope, LezerError, LezerResult};
-pub use intent::TxIntent;
+pub use intent::{SummarizeContext, TxIntent};
 pub use logging::{AuditLogger, Redacted};
 pub use state::{
     AccountSummaryView, ActivityItemView, InFlightView, PendingRequestView, SessionSummaryView,
@@ -780,11 +780,115 @@ impl WalletEngine {
         Ok(receipt)
     }
 
+    // ── LP-0021 faucet (lezer_faucet program) ─────────────────────────────
+
+    /// Configured `lezer_faucet` program id (recorded deployment or `$LEZER_FAUCET_PROGRAM`).
+    pub fn faucet_program(&self) -> Option<String> {
+        self.deployment("lezer_faucet")
+            .map(|d| d.program_id)
+            .or_else(|| std::env::var("LEZER_FAUCET_PROGRAM").ok().filter(|s| !s.trim().is_empty()))
+    }
+
+    /// Read the faucet vault balance and optional `recipient` claim status from chain.
+    pub async fn faucet_status(
+        &self,
+        program: &str,
+        recipient: Option<&str>,
+    ) -> LezerResult<lezer_adapter::FaucetStatus> {
+        let profile = self
+            .unlocked
+            .as_ref()
+            .map(|u| u.engine.profile().clone())
+            .unwrap_or_else(|| self.effective_profile_for_new());
+        lezer_adapter::faucet_status_rpc(&profile, program, recipient)
+            .await
+            .map_err(|e| chain_err(ErrorCode::SequencerUnreachable, &e))
+    }
+
+    /// Choose a public fee-payer account: prefers `preferred` if it has balance to cover
+    /// fees, otherwise falls back to any funded public account in the wallet.
+    pub async fn pick_fee_payer(&mut self, preferred: &str) -> LezerResult<String> {
+        let preferred_id = self.resolve_account(preferred)?;
+        if preferred_id.starts_with("Public/")
+            && let Ok(b) = self.balance(&preferred_id).await
+            && b.balance.parse::<u128>().unwrap_or(0) >= lezer_adapter::DEFAULT_MAX_FEE
+        {
+            return Ok(preferred_id);
+        }
+        let accounts: Vec<String> = self
+            .accounts()?
+            .into_iter()
+            .filter(|a| a.kind == AccountKind::Public)
+            .map(|a| a.account_id)
+            .collect();
+        for acct in accounts {
+            if let Ok(b) = self.balance(&acct).await
+                && b.balance.parse::<u128>().unwrap_or(0) >= lezer_adapter::DEFAULT_MAX_FEE
+            {
+                return Ok(acct);
+            }
+        }
+        Ok(preferred_id)
+    }
+
+    /// Claim `DEFAULT_DRIP_AMOUNT` (50 LEZ) from `lezer_faucet` into `recipient`.
+    /// If `payer` is `None`, automatically selects a funded public account in the wallet
+    /// so brand-new 0-balance accounts can claim from the faucet.
+    pub async fn faucet_claim(
+        &mut self,
+        program: &str,
+        recipient: &str,
+        payer: Option<&str>,
+    ) -> LezerResult<TxReceipt> {
+        self.require_unlocked()?;
+        let payer_id = match payer {
+            Some(p) => self.resolve_account(p)?,
+            None => self.pick_fee_payer(recipient).await?,
+        };
+        self.in_flight = Some(InFlightView {
+            description: "faucet claim".into(),
+            requires_zk_proof: false,
+            started_unix: now_unix(),
+        });
+        let engine = &mut self.unlocked.as_mut().expect("checked").engine;
+        let receipt = engine.faucet_claim(program, recipient, &payer_id).await;
+        self.in_flight = None;
+        let receipt = receipt.map_err(|e| chain_err(ErrorCode::TransactionRejected, &e))?;
+        self.journal_receipt("faucet claim", &receipt)?;
+        Ok(receipt)
+    }
+
     // ── LP-0023 program registry ──────────────────────────────────────────
 
     /// Configured `lezer_registry` program id.
     pub fn registry_program(&self) -> Option<String> {
-        self.deployment("lezer_registry").map(|d| d.program_id)
+        self.deployment("lezer_registry")
+            .map(|d| d.program_id)
+            .or_else(|| {
+                self.unlocked
+                    .as_ref()
+                    .map(|u| u.engine.profile().clone())
+                    .unwrap_or_else(|| self.effective_profile_for_new())
+                    .deployments
+                    .registry
+            })
+    }
+
+    /// O(1) lookup of a single program's entry in the LP-0023 registry.
+    pub async fn lookup_registry_entry(
+        &self,
+        program_id: &str,
+    ) -> Option<lezer_adapter::RegistryEntry> {
+        let registry_id = self.registry_program()?;
+        let profile = self
+            .unlocked
+            .as_ref()
+            .map(|u| u.engine.profile().clone())
+            .unwrap_or_else(|| self.effective_profile_for_new());
+        lezer_adapter::lookup_registry_entry(&profile, &registry_id, program_id)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// List every registered program — wallet-less chain read.
@@ -901,28 +1005,92 @@ impl WalletEngine {
         self.balance(account_id).await
     }
 
-    async fn precheck(&mut self, intent: &TxIntent) -> Precheck {
+    fn target_program_for_intent(&self, intent: &TxIntent) -> Option<String> {
+        match intent {
+            TxIntent::NativeTransfer { .. } => None,
+            TxIntent::SubmitTestimonial { .. } => self.testimonial_program(),
+            TxIntent::FaucetClaim { .. } => self.faucet_program(),
+            TxIntent::TokenTransfer { .. }
+            | TxIntent::TokenMint { .. }
+            | TxIntent::TokenBurn { .. }
+            | TxIntent::TokenSetAuthority { .. } => self.token_program(),
+        }
+    }
+
+    async fn precheck(&mut self, intent: &TxIntent, target_program: Option<&str>) -> Precheck {
         let Some(amount) = intent.amount() else {
             return Precheck::Unavailable { reason: "invalid amount".into() };
         };
-        match self.balance(intent.signing_account()).await {
-            Ok(b) => {
-                let available: u128 = b.balance.parse().unwrap_or(0);
-                if available >= amount {
-                    Precheck::Passed { available: b.balance }
-                } else {
-                    Precheck::InsufficientFunds { available: b.balance, required: amount.to_string() }
+        match intent {
+            TxIntent::TokenTransfer { token_id, from, .. }
+            | TxIntent::TokenBurn { token_id, from, .. } => {
+                let Some(prog) = target_program else {
+                    return Precheck::Unavailable { reason: "lezer_token not deployed".into() };
+                };
+                match self.token_balance(prog, token_id, from).await {
+                    Ok(available) if available >= amount => Precheck::Passed {
+                        available: available.to_string(),
+                    },
+                    Ok(available) => Precheck::InsufficientFunds {
+                        available: available.to_string(),
+                        required: amount.to_string(),
+                    },
+                    Err(e) => Precheck::Unavailable { reason: e.message },
                 }
             }
-            Err(e) => Precheck::Unavailable { reason: e.message },
+            TxIntent::FaucetClaim { recipient } => {
+                let Some(prog) = target_program else {
+                    return Precheck::Unavailable { reason: "lezer_faucet not deployed".into() };
+                };
+                match self.faucet_status(prog, Some(recipient)).await {
+                    Ok(st) if st.already_claimed => Precheck::InsufficientFunds {
+                        available: "0 (already claimed)".into(),
+                        required: st.drip_amount,
+                    },
+                    Ok(st) if st.vault_balance.parse::<u128>().unwrap_or(0) < lezer_adapter::DEFAULT_DRIP_AMOUNT => {
+                        Precheck::InsufficientFunds {
+                            available: st.vault_balance,
+                            required: st.drip_amount,
+                        }
+                    }
+                    Ok(st) => Precheck::Passed { available: st.vault_balance },
+                    Err(e) => Precheck::Unavailable { reason: e.message },
+                }
+            }
+            _ => match self.balance(intent.signing_account()).await {
+                Ok(b) => {
+                    let available: u128 = b.balance.parse().unwrap_or(0);
+                    if available >= amount {
+                        Precheck::Passed { available: b.balance }
+                    } else {
+                        Precheck::InsufficientFunds { available: b.balance, required: amount.to_string() }
+                    }
+                }
+                Err(e) => Precheck::Unavailable { reason: e.message },
+            },
         }
     }
 
     pub async fn propose(&mut self, token: &str, intent: TxIntent) -> LezerResult<PendingProposal> {
         let session = self.session(token)?;
-        let precheck = self.precheck(&intent).await;
-        let program = self.testimonial_program();
-        let proposal = self.broker.queue_proposal(&session, intent, precheck, program.as_deref(), now_unix())?;
+        let target_program_id = self.target_program_for_intent(&intent);
+        let precheck = self.precheck(&intent, target_program_id.as_deref()).await;
+        let registry_entry = match &target_program_id {
+            Some(pid) => self.lookup_registry_entry(pid).await,
+            None => None,
+        };
+        let token_info = match (&target_program_id, intent.token_id()) {
+            (Some(pid), Some(tid)) => self.token_info(pid, tid).await.ok(),
+            _ => None,
+        };
+        let ctx = SummarizeContext {
+            native_token_program_id: lezer_adapter::native_token_program_id(),
+            max_fee: Some(lezer_adapter::DEFAULT_MAX_FEE),
+            target_program_id,
+            registry_entry,
+            token_info,
+        };
+        let proposal = self.broker.queue_proposal(&session, intent, precheck, ctx, now_unix())?;
         self.revision += 1;
         Ok(proposal)
     }
@@ -937,8 +1105,36 @@ impl WalletEngine {
                 self.transfer(from, to, amount).await
             }
             TxIntent::SubmitTestimonial { author, username, text } => {
-                let program = proposal.summary.to.clone();
-                self.submit_testimonial(&program, author, author, username, text).await
+                let program = proposal.summary.verification_badge.program_id.clone();
+                let payer = self.pick_fee_payer(author).await?;
+                self.submit_testimonial(&program, author, &payer, username, text).await
+            }
+            TxIntent::FaucetClaim { recipient } => {
+                let program = proposal.summary.verification_badge.program_id.clone();
+                self.faucet_claim(&program, recipient, None).await
+            }
+            TxIntent::TokenTransfer { token_id, from, to, amount } => {
+                let program = proposal.summary.verification_badge.program_id.clone();
+                let amount: u128 = amount.parse().map_err(|_| LezerError::new(ErrorCode::SimulationReverted, "invalid amount"))?;
+                let payer = self.pick_fee_payer(from).await?;
+                self.token_transfer(&program, token_id, from, to, &payer, amount).await
+            }
+            TxIntent::TokenMint { token_id, authority, to, amount } => {
+                let program = proposal.summary.verification_badge.program_id.clone();
+                let amount: u128 = amount.parse().map_err(|_| LezerError::new(ErrorCode::SimulationReverted, "invalid amount"))?;
+                let payer = self.pick_fee_payer(authority).await?;
+                self.token_mint(&program, token_id, authority, to, &payer, amount).await
+            }
+            TxIntent::TokenBurn { token_id, from, amount } => {
+                let program = proposal.summary.verification_badge.program_id.clone();
+                let amount: u128 = amount.parse().map_err(|_| LezerError::new(ErrorCode::SimulationReverted, "invalid amount"))?;
+                let payer = self.pick_fee_payer(from).await?;
+                self.token_burn(&program, token_id, from, &payer, amount).await
+            }
+            TxIntent::TokenSetAuthority { token_id, authority, new_authority } => {
+                let program = proposal.summary.verification_badge.program_id.clone();
+                let payer = self.pick_fee_payer(authority).await?;
+                self.token_set_authority(&program, token_id, authority, &payer, new_authority.as_deref()).await
             }
         };
         match result {
