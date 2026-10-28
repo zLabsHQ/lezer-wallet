@@ -1,6 +1,6 @@
 # Lezer Wallet — System Architecture
 
-> **For users, integrators, and security reviewers.** This document describes the technical architecture of Lezer Wallet, including the privacy model, cryptographic design, component boundaries, and trust assumptions.
+> **For users, integrators, and security reviewers.** This document describes the production architecture of Lezer Wallet on **Logos Execution Zone (LEZ) `v0.3.1`**, including the privacy model, cryptographic design, component boundaries, and trust assumptions.
 
 ---
 
@@ -8,9 +8,9 @@
 
 Lezer Wallet is built on three non-negotiable principles:
 
-1. **Rust is the Sole Source of Wallet Truth.** All cryptographic operations, key custody, session management, approval enforcement, and state transitions live inside `lezer-core` — a native Rust engine with zero JavaScript/QML dependencies.
-2. **Basecamp QML is the Native Launch UI.** The wallet runs as a first-class Logos Basecamp module (`lezer_wallet_ui`) with a C-ABI provider (`lezer_wallet_provider`) — no Electron, no WebView wrapper, no remote RPC.
-3. **Zero Blind Signing, Zero Telemetry.** Every transaction is decoded into human-readable call effects before signing. No analytics, no third-party APIs, no external endpoints beyond the user's configured LEZ sequencer and optional Logos Storage node.
+1. **Rust is the Sole Source of Wallet Truth.** All key custody, encrypted vault persistence, session management, approval digest enforcement, and chain interactions live inside `lezer-core` and `lezer-adapter` (wrapping the official upstream `wallet::WalletCore` `v0.3.1`).
+2. **Basecamp QML is the Native Launch UI.** The wallet runs as a Logos Basecamp module (`lezer_wallet_ui`) paired with a caller-authenticated C-ABI provider (`lezer_wallet_provider`) — privileged operations check `logos_rust_sdk::current_caller()` rather than any shared string secret.
+3. **Zero Blind Signing, Zero Charged Reverts, Zero Telemetry.** Every dApp proposal is summarized into a canonical `TransactionSummary` bound by SHA-256 digest, enriched with live on-chain `lezer_registry` (LP-0023) verification badges, and pre-checked against shard state before signing so doomed calls are rejected locally before broadcast.
 
 ---
 
@@ -18,207 +18,89 @@ Lezer Wallet is built on three non-negotiable principles:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         USER SURFACES                                │
-│  ┌────────────┐  ┌────────────┐  ┌──────────────┐  ┌────────────┐  │
-│  │  lezer     │  │ lezer_     │  │  apps/       │  │  lezer     │  │
-│  │  (CLI)     │  │ wallet_ui  │  │  lezer-portal│  │  extension │  │
-│  │            │  │  (QML)     │  │  (Next.js)   │  │  (MV3)     │  │
-│  └─────┬──────┘  └─────┬──────┘  └──────┬───────┘  └─────┬──────┘  │
-│        │               │                │                │         │
-│  ┌─────┴───────────────┴────────────────┴────────────────┴─────┐   │
-│  │              IPC / LIDL / JSON-RPC Boundary                  │   │
-│  │         (Session tokens, capability ACLs, no secrets)        │   │
-│  └────────────────────────────┬───────────────────────────────┘   │
-└───────────────────────────────┼───────────────────────────────────┘
-                                │
-┌───────────────────────────────┼───────────────────────────────────┐
-│                    NATIVE RUST CORE (`lezer-core`)                 │
-│  ┌────────────────────────────┴───────────────────────────────┐   │
-│  │  Vault  │  Cache  │  Sessions  │  Broker  │  Decoder  │    │   │
-│  │  AutoLock │ ProverQueue │ Registry │ Storage │ Summary │    │   │
-│  │  Errors │ Logging │ Migration │ Concurrency │ Testimonial│    │   │
-│  └────────────────────────────┬───────────────────────────────┘   │
-│                               │                                   │
-│  ┌────────────────────────────┴───────────────────────────────┐   │
-│  │                  lezer-adapter                             │   │
-│  │  RPC │ Profile │ Accounts │ Transfer │ Token │ ATA │      │   │
-│  │  Faucet │ Simulate │ Prover │ Codecs │                   │   │
-│  │  (Sole importer of upstream `wallet`, `lee_core`, SPEL)    │   │
-│  └────────────────────────────┬───────────────────────────────┘   │
-└───────────────────────────────┼───────────────────────────────────┘
-                                │ JSON-RPC over HTTPS
-┌───────────────────────────────┼───────────────────────────────────┐
-│                 LOGOS EXECUTION ZONE (LEZ)                         │
-│         Sequencer: https://testnet.lez.logos.co                    │
-│    Public Accounts │ Private Accounts (ZK/ML-KEM) │ SPEL Programs │
-└────────────────────────────────────────────────────────────────────┘
+│                         USER & DAPP SURFACES                        │
+│  ┌────────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────┐  │
+│  │   lezer    │  │ lezer_wallet │  │ lezer_faucet │  │  lezer_   │  │
+│  │   (CLI)    │  │  _ui (QML)   │  │  _ui (QML)   │  │testimonial│  │
+│  └─────┬──────┘  └──────┬───────┘  └──────┬───────┘  └─────┬─────┘  │
+│        │                └─────────────────┼────────────────┘        │
+│        │                                  │ LIDL / IPC              │
+│        │         ┌────────────────────────┴────────────────┐        │
+│        │         │  lezer_wallet_provider / lezer-provider │        │
+│        │         │  (Host-authenticated Caller + Jobs)     │        │
+│        └─────────┼────────────────────────┬────────────────┘        │
+└──────────────────┼─────────────────────────┼────────────────────────┘
+                   │                         │
+┌──────────────────┴─────────────────────────┴────────────────────────┐
+│                    NATIVE RUST CORE (`lezer-core`)                  │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  SealedVaultEnvelopeV1 (Argon2id + XChaCha20-Poly1305)        │  │
+│  │  ApprovalBroker │ TxIntent & Summarize │ AutoLockFsm │ Cache  │  │
+│  │  ErrorCode (LZR-1xxx..6xxx) │ Redacted AuditLogger            │  │
+│  └───────────────────────────────┬───────────────────────────────┘  │
+│                                  │                                  │
+│  ┌───────────────────────────────┴───────────────────────────────┐  │
+│  │                   `lezer-adapter`                             │  │
+│  │  Official `wallet::WalletCore` (v0.3.1) │ Public & Private Tx │  │
+│  │  ProgramLoader │ Token Client │ Faucet Client │ Registry      │  │
+│  │  AllowedEndpointsGuard (sole importer of upstream LEZ crates) │  │
+│  └───────────────────────────────┬───────────────────────────────┘  │
+└──────────────────────────────────┼──────────────────────────────────┘
+                                   │ JSON-RPC
+┌──────────────────────────────────┼──────────────────────────────────┐
+│                 LOGOS EXECUTION ZONE (LEZ v0.3.1)                   │
+│       https://testnet.lez.logos.co  or  http://127.0.0.1:3040       │
+│  native_token │ privacy_preserving_circuit │ program_loader         │
+│  lezer_testimonial │ lezer_token │ lezer_faucet │ lezer_registry    │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 3. Component Responsibilities
 
-### 3.1 `lezer-adapter` — Protocol Boundary Layer
+### 3.1 `crates/lezer-adapter` — Exclusive Protocol Boundary
 
-The **only** crate permitted to import upstream LEZ crates (`wallet`, `lee_core`, `nssa`, `spel`, `risc0-zkvm`).
+The **only** crate permitted to import upstream LEZ crates (`wallet`, `lee`, `lee_core`, `sequencer_service_rpc`, `key_protocol`). Enforced in CI by `tooling/check-boundaries.sh`.
 
-- `profile.rs`: `NetworkProfile` (`lez-testnet-0.3`, `lez-testnet-0.4`, `standalone`) + `AllowedEndpointsGuard` (zero-telemetry egress allowlist).
-- `rpc.rs`: Sequencer JSON-RPC client (`getProgramIds`, `getLastBlockId`, `getAccount`, `sendTransaction`, `getTransactionReceipt`).
-- `accounts.rs`: `Public/<base58>` Ed25519 derivation (`m/44'/9999'/0'/0/i`), `Private/<base58>` ML-KEM-768 + Ed25519 derivation (`m/44'/9999'/1'/0/i`), `lezer:priv1...` URI codec, view-tag scanning.
-- `transfer.rs`: `TransferPrivacyMode` classification (`PublicToPublic`, `ShieldPublicToPrivate`, `DeshieldPrivateToPublic`, `PrivateToPrivate`) + ZK transfer executor.
-- `token.rs`: `TOKEN_ID` facade (`NewFungibleDefinition`, `Mint`, `Transfer`, `Burn`, `SetAuthority`).
-- `ata.rs`: Deterministic `SHA256(owner || definition)` ATA derivation for public and private owners.
-- `faucet.rs`: Piñata PoW challenge reader, multi-threaded SHA-256 PoW solver, stale-challenge retry.
-- `simulate.rs`: Pre-flight balance delta calculator + deterministic revert detector (`SimDeterministicRevert`).
-- `prover.rs`: 4-stage ZK pipeline (`Witness → r0vm → RapidSnark → Broadcast`) with wall-clock + peak-RSS telemetry.
-- `codecs.rs`: RISC0 `[u32; 8]` word serialization, program-ID hex round-trips.
+- `engine.rs`: Wraps upstream `wallet::WalletCore` (`v0.3.1`) for deterministic key trees, public (`Public/<base58>`) and private (`Private/<base58>`) accounts, `lezer:priv1…` receive addresses, private block syncing, and all 4 native transfer modes (`Public`, `Shield`, `Deshield`, `Private` with real RISC Zero ZK proving).
+- `programs.rs`: Deploys RISC0 ELF binaries via the official `ProgramLoader` facade, submits LP-0021 testimonials (`lezer_testimonial`), and provides the wallet-less `verify_adoption` chain reader.
+- `token.rs`: Host client for `lezer_token` (`token_define`, `token_mint`, `token_transfer`, `token_burn`, `token_set_authority`, `token_info_rpc`, `token_balance_rpc`) with local shard pre-checks (`send_pub_tx_with_pre_check`).
+- `faucet.rs`: Host client for `lezer_faucet` (`faucet_vault_id`, `faucet_status_rpc`, `faucet_claim`) with local pre-checks for per-account claim tickets and treasury balance.
+- `registry.rs`: Host client for `lezer_registry` (`register_program_self` via chained calls, wallet-less `list_registry`, and O(1) `lookup_registry_entry` for live approval badges).
+- `profile.rs` & `rpc.rs`: `NetworkProfile` (`lez-testnet`, `lez-localnet`, `lez-custom`) + `AllowedEndpointsGuard` egress allowlist.
 
-### 3.2 `lezer-core` — Native Wallet Engine
+### 3.2 `crates/lezer-core` — Wallet State & Approval Engine
 
-Owns all wallet truth. Isolated from upstream protocol crates.
+Owns all wallet state and security invariants with zero direct upstream imports:
 
-- `vault.rs`: `SealedVaultEnvelopeV1` (Argon2id → XChaCha20-Poly1305 → SHA-256 AAD MAC). Atomic write-temp-fsync-rename. BIP-39 mnemonic generation/validation. `PendingPrivateSpend` nullifier journal.
-- `cache.rs`: `CacheEnvelopeV1` rebuildable `~/.lezer/cache.json` for Offline Mode balance inspection.
-- `migration.rs`: Forward envelope migration with automatic `.bak` backup.
-- `autolock.rs`: `AutoLockFsm` 15-minute inactivity timer + `DeferredLockPending` for in-flight operations.
-- `broker.rs`: `ApprovalBroker` + `SessionGrant` + `verify_session_balance_permission` + `take_verified_proposal` (enforces `LZR-3005` proposal digest mismatch and `LZR-3004` unacknowledged risk gate).
-- `decoder.rs`: Tier-1 built-in decoders for `AUTHENTICATED_TRANSFER_ID`, `TOKEN_ID`, `ASSOCIATED_TOKEN_ACCOUNT_ID`, `PINATA_ID`, `lezer_testimonial`. Critical-red override gate for `SetAuthority` mutations.
-- `summary.rs`: Human-readable `TransactionSummary` + risk warnings.
-- `registry.rs`: LP-0023 client — `register_program_entry`, `lookup_program_entry`, `verify_program_bytecode` (4-state badge).
-- `testimonial.rs`: Sharded submitter (16 shards, 32-entry page rollover) + stateless paginator for `verify-adoption`.
-- `storage.rs`: Client-side encrypted `SealedVaultEnvelopeV1` backup push/pull via Logos Storage/Codex CID.
-- `concurrency.rs`: `ProverQueue` with `tokio::sync::Semaphore(1)` + live 4-stage progress streaming.
-- `errors.rs`: Unified `LezerError` + `LZR-1xxx..6xxx` taxonomy.
-- `logging.rs`: Zero-telemetry `AuditLogger` + `Redacted<T>` secret wrapper.
-- `state.rs`: Canonical `WalletStateSnapshot` + `WalletEngine`.
+- `vault.rs`: `SealedVaultEnvelopeV1` (Argon2id `m=64 MiB, t=3, p=4` → XChaCha20-Poly1305 → SHA-256 header MAC) wrapping the upstream wallet storage + Lezer sessions, activity journal, and tracked tokens. Atomic write-temp-fsync-rename with `0600` permissions.
+- `autolock.rs`: 15-minute inactivity timer with `DeferredLockPending` while a ZK proof or program deployment is in flight.
+- `broker.rs`: `ApprovalBroker` managing `DappConnectRequest`, `SessionGrant` (`PermissionScope::ReadPrivateBalance` gate), `PendingProposal`, and `take_verified_proposal` (enforcing `LZR-3005` digest binding and `LZR-3004` risk gates).
+- `intent.rs` & `summary.rs`: Translates all 7 `TxIntent` variants (`NativeTransfer`, `SubmitTestimonial`, `FaucetClaim`, `TokenTransfer`, `TokenMint`, `TokenBurn`, `TokenSetAuthority`) into `TransactionSummary` with live `lezer_registry` `VerifiedSource` badges and `CriticalRedOverride` warnings on authority changes.
 
-### 3.3 `lezer-cli` — Full-Parity CLI
+### 3.3 `crates/lezer-provider` & `modules/lezer_wallet_provider`
 
-`lezer` binary with complete feature parity to the GUI. All output is `--json` compatible with stdout isolation (`libc::dup(1)`/`dup2(2,1)`).
+- `lezer-provider`: Thread-safe provider state machine with background `tokio` job execution (`job_id` polling + `approvalRequested`/`requestResolved` events) so long-running ZK proofs never block the Basecamp IPC loop.
+- `Caller::is_wallet_ui()` verifies via `logos_rust_sdk::current_caller()` that privileged `wallet_call` operations originate exclusively from `lezer_wallet_ui`, and binds dApp `session_token`s to the originating module name.
 
-Commands: `init`, `restore`, `unlock`, `lock`, `status`, `account new|list|receive`, `balance`, `transfer`, `faucet info|claim`, `token create|ata-address|ata-create|send|mint|set-authority|burn|balances`, `testimonial submit|list`, `registry lookup|list|search|register|verify`, `backup push|pull`, `verify-adoption`.
+### 3.4 On-Chain SPEL Programs (`programs/`)
 
-### 3.4 `lezer-wasm` — Gear 1 Pure-WASM Signing
+All four guest programs are built reproducibly with `RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build`:
 
-Pure-browser Ed25519 public account derivation and transaction signing for `apps/lezer-extension`. Zero native binary requirement.
-
-### 3.5 `lezerd` — Gear 2 Native Messaging Daemon
-
-Chromium/Firefox Native Messaging host daemon. Speaks 4-byte little-endian length-prefixed JSON framing over `stdin`/`stdout`. Delegates private RISC0 + RapidSnark Groth16 proofs to the local machine.
-
-### 3.6 `modules/lezer_wallet_provider` — LIDL Core Module
-
-`type: "core"`, `interface: "cdylib"`. Implements `connect`, `get_request_status`, `get_accounts`, `get_balance`, `propose_transaction`, `execute_privileged`. All methods enforce session token + capability ACL checks inside Rust.
-
-### 3.7 `modules/lezer_wallet_ui` — Basecamp QML Wallet
-
-`type: "ui_qml"`. Views: `OnboardingView`, `PortfolioView`, `SendTransferView`, `TokenManagerView`, `ActivityProverView`, `ConnectedAppsView`, `SettingsView`. Modals: `ConnectPromptSheet`, `ApprovalSheet` (with public-on-chain privacy banner + LP-0023 verification badge + gas/cycle estimate).
-
-### 3.8 `modules/lezer_faucet_ui` & `modules/lezer_testimonial_ui`
-
-Reference `ui_qml` mini-apps demonstrating `@lezer/provider` + `LezerProvider.qml` integration.
-
-### 3.9 `programs/testimonial` & `programs/registry`
-
-SPEL RISC0 guest programs. `testimonial`: per-author PDA + 16-shard SHA-256 paginated index PDAs (`["testimonial-index", submission_id, shard_key, page_key]`). `registry`: LP-0023 `register_self` chained-call authentication + 4-state verification.
-
-### 3.10 `packages/provider`, `packages/registry`, `packages/recovery`
-
-- `@lezer/provider`: TypeScript SDK + `LezerProvider.qml` QML singleton + `MockLezerProvider` for testing.
-- `@lezer/registry`: LP-0023 client, RISC0 serde IDL decoder, PDA derivation helpers, Logos Storage fetcher.
-- `@lezer/recovery`: GF(256) 2-of-3 Shamir Secret Sharing + WebAuthn Passkey PRF + `lezer:recovery1:` URI codec.
+1. **`programs/testimonial` (`lezer_testimonial`)**: Stores one `Testimonial` per signing author shard and indexes authors across 16 deterministic bucket PDAs (`page_seed(bucket, page)`). Supports `RegisterSelf`.
+2. **`programs/token` (`lezer_token`)**: Fungible token program using the LEZ v0.3 Plan/Apply model: `TokenDefinition` on the definition account, per-`(definition, owner)` `Holding` PDAs, supply conservation in `u128`, mint authority rotation/renouncement, and `RegisterSelf`.
+3. **`programs/faucet` (`lezer_faucet`)**: Holds native LEZ in a deterministic treasury PDA (`VAULT_SEED`) and dispenses 50 LEZ via `lee_core::native_token::custody_transfer` (`with_pda_seeds`) while writing a per-recipient `ClaimRecord` PDA to enforce rate-limiting on chain. Supports `RegisterSelf`.
+4. **`programs/registry` (`lezer_registry`)**: LP-0023 on-chain program registry. Keyed by `input.caller_account_id` from a chained call (`RegisterSelf`), making it cryptographically impossible for an arbitrary account to forge a metadata listing for another program.
 
 ---
 
-## 4. Privacy & Security Model
+## 4. Trust Boundaries & Verification Gates
 
-### 4.1 Private Account Cryptography
-
-| Component | Algorithm | Purpose |
+| Gate | Description | Verification Command |
 | :--- | :--- | :--- |
-| Nullifier Keypair (`npk`/`nsk`) | Ed25519 | Spends private notes; nullifies spent commitments |
-| Viewing Keypair (`vpk`/`vsk`) | ML-KEM-768 | Decrypts incoming notes without spending authority |
-| Receive URI | `lezer:priv1...` | Checksummed single-string encoding of `(vpk, npk)` |
-| Note Encryption | ML-KEM-768 + XChaCha20-Poly1305 | On-chain notes are Pedersen commitments; only `vpk` holder can decrypt |
-| View-Tag Filter | 4-byte prefix | ~99% skip rate for unrelated notes before decapsulation |
-
-### 4.2 Vault Encryption
-
-```
-SealedVaultEnvelopeV1:
-  salt       = random(16 bytes)
-  argon2id   = Argon2id(password, salt, t=3, m=64MiB, p=4)
-  wrapping_key = argon2id[0..32]
-  header_mac = SHA256(version || salt || argon2id_params || ciphertext_len)
-  nonce      = random(24 bytes)
-  ciphertext = XChaCha20-Poly1305(wrapping_key, nonce, plaintext_vault)
-```
-
-- **Atomic Persistence:** `vault.enc.tmp.<pid>` → fsync → rename to `vault.enc`.
-- **Crash Recovery:** Corrupted/missing cache rebuilds from chain; vault migration creates `.bak` before upgrade.
-- **Zeroization:** `Redacted<T>` + `zeroize` on drop for all key material.
-
-### 4.3 Session & Approval Gates
-
-```
-dApp → LIDL → lezer_wallet_provider → SessionBroker (lezer-core)
-                                      │
-                                      ├─ session_token issued ONLY after
-                                      │  user approves ConnectPromptSheet
-                                      │
-                                      ├─ get_balance(Private/<id>) requires
-                                      │  PermissionScope::ReadPrivateBalance
-                                      │  for that specific account
-                                      │
-                                      ├─ propose_transaction requires
-                                      │  decoded summary + explicit approval
-                                      │  (ApproveDecision)
-                                      │
-                                      └─ execute_privileged requires
-                                         internal ui_token (wallet UI only)
-```
-
-### 4.4 Zero-Telemetry Guard
-
-`AllowedEndpointsGuard` in `lezer-adapter` enforces a strict egress allowlist:
-- `sequencer_url` (LEZ sequencer)
-- `lez_node_url` (optional local node)
-- `logos_storage_url` (optional Codex backup node)
-
-Any other outbound HTTP request is rejected with `LZR-4002`. Verified by `tooling/check-boundaries.sh`.
-
----
-
-## 5. Trust Boundaries & Threat Model
-
-| Boundary | Trust Level | Mitigation |
-| :--- | :--- | :--- |
-| `lezer-core` ↔ `lezer-adapter` | Trusted (same process) | Compile-time isolation; adapter is the only upstream importer |
-| `lezer-core` ↔ `lezer_wallet_provider` | Trusted (same process) | Session token + capability ACL enforced in Rust |
-| `lezer_wallet_provider` ↔ `lezer_wallet_ui` | Untrusted (QML/JS) | `ui_token` required for `execute_privileged`; no secret exposure |
-| `lezer_wallet_ui` ↔ dApp (`lezer_faucet_ui`, `lezer_testimonial_ui`) | Untrusted (QML/JS) | Session token issued only after user approval; scoped ACLs |
-| `lezer-core` ↔ Sequencer | Untrusted (network) | TLS + JSON-RPC; no auth secrets sent |
-| `lezer-core` ↔ Logos Storage | Untrusted (network) | `SealedVaultEnvelopeV1` encrypted client-side; CID-addressed |
-| `apps/lezer-extension` ↔ `lezerd` | Untrusted (native messaging) | 4-byte LE framing; extension never holds private keys |
-
----
-
-## 6. Release & Verification Gates
-
-| Gate | Description | Test |
-| :--- | :--- | :--- |
-| RC-01 | dApp connect → approval sheet → testimonial submission | `lezer_wallet_provider` unit test |
-| RC-02 | Live private native/token transfers, deferred lock, crash recovery | `lezer-core/tests/live_private_token_transfer.rs` |
-| RC-03 | 50-account concurrent testimonial shard overflow + stateless verify | `lezer-cli/tests/concurrent_50_testimonials_shard_overflow.rs` |
-| Boundary | No upstream imports in `lezer-core`; no secrets in `modules/`/`apps/` | `tooling/check-boundaries.sh` |
-| Lint | `cargo clippy --workspace --all-targets -- -D warnings` | CI |
-| E2E | `./tooling/demo.sh` — clean-room evaluator suite | CI |
-
----
-
-## 7. Forward Design (Post-Prize)
-
-- **LP-0022 Multi-Zone & L1 Staking:** `NetworkProfile` abstraction already supports additional zones.
-- **Mobile (iOS/Android):** `lezer-core` compiles to `aarch64-apple-ios` / `aarch64-linux-android`; `lezerd` daemon pattern extends to native mobile.
-- **2-of-3 Shamir Recovery:** `@lezer/recovery` package provides GF(256) share splitting + WebAuthn PRF sealing + `lezer:recovery1:` URIs.
-- **Browser Extension:** `apps/lezer-extension` (MV3) + `lezer-wasm` (Gear 1) + `lezerd` (Gear 2) — live in repo.
+| Boundary Check | Only `lezer-adapter` imports upstream LEZ crates; zero telemetry | `./tooling/check-boundaries.sh` |
+| Module Catalog | Validates `logos-repo.json` and all 4 Basecamp module manifests | `./tooling/release-catalog.sh` |
+| Unit & Conformance | Vault, broker, intent summaries, provider caller ACLs, guest cores | `cargo test --workspace` |
+| Live Sequencer E2E | Real v0.3.1 sequencer: transfers, testimonial, token, registry, faucet | `cargo test -p lezer-cli --test e2e_sequencer` |
+| Clean-Room Demo | Full evaluator walkthrough without simulation | `./tooling/demo.sh` |

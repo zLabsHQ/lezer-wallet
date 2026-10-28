@@ -71,7 +71,12 @@ export interface Balance {
 
 export type TxIntent =
   | { kind: 'native_transfer'; from: string; to: string; amount: string }
-  | { kind: 'submit_testimonial'; author: string; username: string; text: string };
+  | { kind: 'submit_testimonial'; author: string; username: string; text: string }
+  | { kind: 'faucet_claim'; recipient: string }
+  | { kind: 'token_transfer'; token_id: string; from: string; to: string; amount: string }
+  | { kind: 'token_mint'; token_id: string; authority: string; to: string; amount: string }
+  | { kind: 'token_burn'; token_id: string; from: string; amount: string }
+  | { kind: 'token_set_authority'; token_id: string; authority: string; new_authority: string | null };
 
 export type TxStatus = { state: 'included'; block_id: number } | { state: 'submitted'; detail: string };
 

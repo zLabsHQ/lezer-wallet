@@ -58,14 +58,31 @@ export class MockLezerProvider {
 
   async proposeTransaction(intent: TxIntent): Promise<TxReceipt> {
     this.ensure();
-    const from = intent.kind === 'native_transfer' ? intent.from : intent.author;
+    const from =
+      intent.kind === 'native_transfer' || intent.kind === 'token_transfer' || intent.kind === 'token_burn'
+        ? intent.from
+        : intent.kind === 'submit_testimonial'
+          ? intent.author
+          : intent.kind === 'faucet_claim'
+            ? intent.recipient
+            : intent.authority;
+    const to =
+      intent.kind === 'native_transfer' || intent.kind === 'token_transfer' || intent.kind === 'token_mint'
+        ? intent.to
+        : intent.kind === 'faucet_claim'
+          ? intent.recipient
+          : intent.kind === 'submit_testimonial'
+            ? 'lezer_testimonial'
+            : intent.token_id;
+    const amount =
+      'amount' in intent ? intent.amount : intent.kind === 'faucet_claim' ? '50000000000' : '0';
     return {
       tx_hash: '0'.repeat(64),
       status: { state: 'submitted', detail: 'mock' },
       mode: 'public',
       from,
-      to: intent.kind === 'native_transfer' ? intent.to : 'testimonial program',
-      amount: intent.kind === 'native_transfer' ? intent.amount : '0',
+      to,
+      amount,
       build_ms: 0,
       inclusion_ms: null,
     };

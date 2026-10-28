@@ -2331,6 +2331,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "faucet_core"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "registry_core",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "fd-lock"
 version = "4.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3985,6 +3994,7 @@ dependencies = [
  "borsh",
  "bs58",
  "common",
+ "faucet_core",
  "hex",
  "key_protocol",
  "lee",

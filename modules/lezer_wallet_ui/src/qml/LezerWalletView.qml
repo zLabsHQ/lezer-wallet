@@ -3,7 +3,6 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "views"
 import "modals"
-import "Format.js" as Fmt
 
 Rectangle {
     id: root

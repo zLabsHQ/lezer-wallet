@@ -1,0 +1,27 @@
+{
+  "name": "lezer_faucet_ui",
+  "display_name": "Lezer Faucet",
+  "version": "0.2.0",
+  "type": "ui_qml",
+  "category": "wallet",
+  "description": "Claim 50 LEZ from the on-chain lezer_faucet program through the Lezer wallet",
+  "author": "Lezer Team",
+  "icon": "src/icons/icon.png",
+  "view": "qml/FaucetView.qml",
+  "dependencies": [
+    "lezer_wallet_provider"
+  ],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

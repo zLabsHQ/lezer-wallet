@@ -96,4 +96,26 @@ step "negative paths (local rejection, no charged revert)"
 "$LEZER_BIN" token transfer --token "$TOKEN_ID" --from alice --to genesis --amount 999999999 --payer genesis \
   && { echo "FAIL: overspend accepted"; exit 1; } || echo "  overspend rejected ✓"
 
+step "deploy lezer_faucet + fund vault + claim 50 LEZ + rate-limit check"
+F_BIN="$(build_guest faucet)"
+"$LEZER_BIN" program deploy "$F_BIN" --payer genesis
+VAULT_ID="$("$LEZER_BIN" faucet vault)"
+"$LEZER_BIN" send --from genesis --to "$VAULT_ID" --amount 150000000000
+"$LEZER_BIN" account new public --label faucet-user >/dev/null
+"$LEZER_BIN" faucet claim --recipient faucet-user
+"$LEZER_BIN" balance faucet-user
+"$LEZER_BIN" faucet claim --recipient faucet-user \
+  && { echo "FAIL: duplicate faucet claim accepted"; exit 1; } || echo "  duplicate faucet claim rejected by on-chain rate-limit pre-check ✓"
+
+step "deploy lezer_registry + chained-call self-registration"
+R_BIN="$(build_guest registry)"
+"$LEZER_BIN" program deploy "$R_BIN" --payer genesis
+"$LEZER_BIN" registry register --subject lezer_testimonial --name "Lezer Testimonial" \
+  --source-url "https://github.com/zLabsHQ/lezer-wallet" --commit "v0.3.1" --version "0.3.1" --payer genesis
+"$LEZER_BIN" registry register --subject lezer_token --name "Lezer Token" \
+  --source-url "https://github.com/zLabsHQ/lezer-wallet" --commit "v0.3.1" --version "0.3.1" --payer genesis
+"$LEZER_BIN" registry register --subject lezer_faucet --name "Lezer Faucet" \
+  --source-url "https://github.com/zLabsHQ/lezer-wallet" --commit "v0.3.1" --version "0.3.1" --payer genesis
+"$LEZER_BIN" registry list
+
 step "DONE — every command above changed or read real chain state"

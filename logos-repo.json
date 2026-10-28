@@ -3,7 +3,7 @@
   "name": "lezer-wallet",
   "displayName": "Lezer Wallet Suite",
   "version": "0.2.0",
-  "description": "Lezer: LEZ wallet (public & private accounts), provider for Basecamp dApps, and an on-chain testimonial mini-app.",
+  "description": "Lezer: LEZ wallet (public & private accounts), provider for Basecamp dApps, and on-chain testimonial & faucet mini-apps.",
   "author": "Lezer Team",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/zLabsHQ/lezer-wallet",
@@ -27,6 +27,12 @@
       "path": "modules/lezer_testimonial_ui",
       "type": "ui_qml",
       "metadata": "modules/lezer_testimonial_ui/metadata.json"
+    },
+    {
+      "name": "lezer_faucet_ui",
+      "path": "modules/lezer_faucet_ui",
+      "type": "ui_qml",
+      "metadata": "modules/lezer_faucet_ui/metadata.json"
     }
   ],
   "dependencies": {

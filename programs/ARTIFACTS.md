@@ -77,3 +77,23 @@ Note: guests cannot observe signatures — authorization is expressed by which a
 transaction (`is_authorized`), and a reverted guest apply still lands in a block as a
 charged-revert, so the wallet pre-checks shards before signing. "Included" therefore means
 "executed" for all `lezer token` commands.
+
+## lezer_faucet (LP-0021)
+
+On-chain native LEZ faucet program (`programs/faucet`). Holds native LEZ in a deterministic
+treasury PDA (`VAULT_SEED`) and dispenses `DEFAULT_DRIP_AMOUNT` (50 LEZ = `50_000_000_000`
+atomic units) via `lee_core::native_token::custody_transfer` (`with_pda_seeds` delegation).
+Enforces 1-per-account rate-limiting via deterministic `claim_seed(recipient)` PDAs on chain,
+with local pre-checks before broadcast.
+
+| Field | Value |
+| :--- | :--- |
+| Source | `programs/faucet/{core,guest}` |
+| Guest binary | `lezer_faucet.bin` (392,080 bytes) |
+| Image ID | `c22cd2cc627ca79657124c456d61e4fbdd1d7e27e49571b9d86a82fe37a4ea28` |
+| Build | `RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build --manifest-path programs/faucet/Cargo.toml -p lezer_faucet` |
+
+| Network | Program account id | Deployed |
+| :--- | :--- | :--- |
+| localnet | `Public/2uYyyT99Tq6jo1nZvQBBnetXrhvcgMLhmUwFpswXQVUZ` | vault PDA `Public/4URtdg6CDWvUNfP4E6hkqwHFNPELawwt8MTV19NR8ASa`; self-registered in `lezer_registry` |
+| testnet (`https://testnet.lez.logos.co`) | — | not yet deployed (needs funded account) |

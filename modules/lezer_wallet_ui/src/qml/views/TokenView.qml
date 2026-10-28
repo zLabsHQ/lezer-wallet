@@ -15,11 +15,11 @@ Item {
     property string tokenProgram: ""
 
     function refresh() {
-        store.call({ op: "tokens" }, function (r) {
+        view.store.call({ op: "tokens" }, function (r) {
             view.tokenProgram = r.token_program || ""
             view.tokenIds = r.token_ids || []
             view.tokenIds.forEach(function (id) {
-                store.call({ op: "token_info", token_id: id }, function (info) {
+                view.store.call({ op: "token_info", token_id: id }, function (info) {
                     var m = view.tokens; m[id] = info; view.tokens = m
                 }, function () {})
             })
@@ -28,11 +28,10 @@ Item {
     }
 
     function refreshBalances() {
-        var b = {}
         view.tokenIds.forEach(function (tid) {
-            store.accounts.forEach(function (a) {
+            view.store.accounts.forEach(function (a) {
                 if (a.kind !== "public") return
-                store.call({ op: "token_balance", token_id: tid, account: a.account_id }, function (r) {
+                view.store.call({ op: "token_balance", token_id: tid, account: a.account_id }, function (r) {
                     var m = view.tokenBalances; m[tid + "|" + a.account_id] = r.balance; view.tokenBalances = m
                 }, function () {})
             })

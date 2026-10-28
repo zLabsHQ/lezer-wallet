@@ -1,6 +1,6 @@
 # Lezer Wallet — Developer Guide
 
-> **For dApp builders and integrators.** This guide shows how to connect your Basecamp `ui_qml` application to Lezer Wallet using `@lezer/provider` and `LezerProvider.qml`.
+> **For dApp builders and integrators.** This guide shows how to connect your Basecamp `ui_qml` application to Lezer Wallet using `LezerProvider.qml` or the `@lezer/provider` TypeScript SDK.
 
 ---
 
@@ -8,7 +8,7 @@
 
 ```bash
 lgpd repo add lezer https://raw.githubusercontent.com/zLabsHQ/lezer-wallet/master/logos-repo.json
-lgpd install lezer_wallet_provider lezer_wallet_ui lezer_faucet_ui lezer_testimonial_ui
+lgpd install lezer_wallet_provider lezer_wallet_ui lezer_testimonial_ui lezer_faucet_ui
 ```
 
 ## 2. Declare Dependency in `metadata.json`
@@ -21,39 +21,80 @@ lgpd install lezer_wallet_provider lezer_wallet_ui lezer_faucet_ui lezer_testimo
 }
 ```
 
-## 3. Connect with `LezerProvider.qml` (QML)
+## 3. Connect & Propose Transactions with `LezerProvider.qml` (QML)
+
+Copy `LezerProvider.qml` (from `templates/lezer-dapp-template/src/qml/LezerProvider.qml`) into your module's `src/qml/` directory. Your module's identity is authenticated by the Logos Basecamp host (`logos_rust_sdk::current_caller()`), so sessions are cryptographically bound to your module.
 
 ```qml
-import QtQuick 2.15
-import "LezerProvider.qml" as Lezer
+import QtQuick
+import QtQuick.Controls
 
 Item {
-    Lezer.LezerProvider {
-        id: provider
-        onConnected: console.log("Connected:", accounts)
-        onAccountsChanged: console.log("Accounts changed:", accounts)
+    LezerProvider {
+        id: wallet
+        displayName: "My LEZ dApp"
+        requestPrivateBalanceRead: false
+
+        onConnected: (accounts) => {
+            console.log("Authorized accounts:", JSON.stringify(accounts))
+        }
+        onProposalResolved: (receipt) => {
+            console.log("Included in block:", receipt.status.block_id, "tx:", receipt.tx_hash)
+        }
+        onFailed: (code, message) => {
+            console.error("Wallet error:", code, message)
+        }
     }
 
-    Component.onCompleted: {
-        provider.connect({ name: "My dApp", origin: "my-dapp" })
+    // 1. Connect — opens ConnectSheet in lezer_wallet_ui for account selection
+    function connectWallet() {
+        wallet.connect()
     }
 
-    // Read balance (public account)
-    function readBalance() {
-        provider.getBalance("Public/<account_id>", "native")
-            .then(bal => console.log("Balance:", bal))
-            .catch(err => console.error(err))
+    // 2. Read balance of an authorized account
+    function readBalance(accountId) {
+        wallet.getBalance(accountId, function (bal) {
+            console.log("Balance (atomic LEZ):", bal.balance, "source:", bal.source)
+        })
     }
 
-    // Propose a transaction
-    function sendTransfer() {
-        provider.proposeTransaction({
-            from: "Public/<sender>",
-            to: "Public/<recipient>",
-            asset: "native",
-            amount: "50",
-            memo: "Hello LEZ!"
-        }).then(tx => console.log("TX hash:", tx.hash))
+    // 3. Propose a native transfer (public, shield, deshield, or private)
+    function sendNative(fromAccount, toAccountOrReceiveUri, atomicAmount) {
+        wallet.propose({
+            kind: "native_transfer",
+            from: fromAccount,
+            to: toAccountOrReceiveUri,
+            amount: String(atomicAmount)
+        })
+    }
+
+    // 4. Propose a fungible token transfer (`lezer_token` SPEL program)
+    function sendToken(tokenId, fromAccount, toAccount, rawAmount) {
+        wallet.propose({
+            kind: "token_transfer",
+            token_id: tokenId,
+            from: fromAccount,
+            to: toAccount,
+            amount: String(rawAmount)
+        })
+    }
+
+    // 5. Claim 50 LEZ from the on-chain faucet (`lezer_faucet` SPEL program)
+    function claimFaucet(recipientAccount) {
+        wallet.propose({
+            kind: "faucet_claim",
+            recipient: recipientAccount
+        })
+    }
+
+    // 6. Publish an LP-0021 on-chain testimonial (`lezer_testimonial` SPEL program)
+    function publishTestimonial(authorAccount, username, text) {
+        wallet.propose({
+            kind: "submit_testimonial",
+            author: authorAccount,
+            username: username,
+            text: text
+        })
     }
 }
 ```
@@ -65,101 +106,106 @@ import { LezerProvider } from '@lezer/provider';
 
 const provider = new LezerProvider();
 
-// Connect — prompts user for account selection
-const { accounts, sessionToken } = await provider.connect({
-  name: 'My dApp',
-  origin: 'my-dapp',
+// Connect — prompts user for account selection in lezer_wallet_ui
+const accounts = await provider.connect({
+  displayName: 'My dApp',
+  requestPrivateBalanceRead: false,
 });
 
-// Read balance
-const balance = await provider.getBalance('Public/<account_id>', 'native');
+// Read balance of a shared account
+const balance = await provider.getBalance(accounts[0].accountId);
 
-// Propose transaction — user sees decoded summary + approval sheet
-const tx = await provider.proposeTransaction({
-  from: 'Public/<sender>',
+// Propose a native transfer — user reviews the decoded summary + LP-0023 badge in ApprovalSheet
+const receipt = await provider.proposeTransaction({
+  kind: 'native_transfer',
+  from: accounts[0].accountId,
   to: 'Public/<recipient>',
-  asset: 'native',
-  amount: '50',
+  amount: '1000000000', // 1 LEZ in atomic units (10^9)
 });
 
-// Listen for events
-provider.on('accountsChanged', (accs) => console.log(accs));
-provider.on('chainChanged', (chainId) => console.log(chainId));
-```
-
-## 5. LP-0023 Program Verification
-
-```typescript
-import { verifyProgram } from '@lezer/registry';
-
-const badge = await verifyProgram('lezer_testimonial', bytecode);
-// Returns: 'VerifiedSource' | 'KnownButUnverified' | 'NoRegistryEntry' | 'MismatchOrError'
-```
-
-## 6. Testimonial Integration (`submission_id: lp0021-lezer`)
-
-```typescript
-import { submitTestimonial } from '@lezer/provider';
-
-await provider.submitTestimonial({
-  text: 'Verified Lezer Wallet E2E!',
-  username: '@myhandle',
-  submissionId: 'lp0021-lezer',
+// Propose a fungible token transfer
+const tokenReceipt = await provider.proposeTransaction({
+  kind: 'token_transfer',
+  token_id: 'Public/<token_definition_account>',
+  from: accounts[0].accountId,
+  to: 'Public/<recipient>',
+  amount: '2500000',
 });
 ```
 
-## 7. Fork the Starter Template
+## 5. Worked Reference Mini-Apps (`modules/`)
+
+1. **`modules/lezer_testimonial_ui` (`TestimonialView.qml`)**:
+   - Connects via `LezerProvider.qml`, filters shared `Public/` accounts, and proposes `{ kind: "submit_testimonial", author, username, text }`.
+   - `lezer-core` queries `lezer_registry` on-chain to attach a `VerifiedSource` badge and an amber privacy notice (`WARN_PUBLIC_ONCHAIN_DATA`) before the user approves.
+2. **`modules/lezer_faucet_ui` (`FaucetView.qml`)**:
+   - Connects via `LezerProvider.qml`, lets the user select which shared `Public/` account receives 50 LEZ, and proposes `{ kind: "faucet_claim", recipient }`.
+   - `lezer-core` pre-checks the recipient's on-chain claim-ticket PDA and the faucet treasury PDA (`custody_transfer`) so rate-limited accounts receive an immediate error instead of a charged revert.
+
+## 6. Fork the Starter Template
 
 ```bash
 git clone https://github.com/zLabsHQ/lezer-wallet.git
 cp -r lezer-wallet/templates/lezer-dapp-template my-dapp
 cd my-dapp
-# Edit metadata.json, src/qml/MainView.qml
-lgpd install lezer_wallet_provider
+# Edit metadata.json and src/qml/MainView.qml
 ```
 
-## 8. Run the Mock Provider (No Wallet Required)
+## 7. Run the Mock Provider (Unit Tests & Playground)
 
 ```typescript
 import { MockLezerProvider } from '@lezer/provider';
 
 const mock = new MockLezerProvider();
-await mock.connect({ name: 'Test', origin: 'test' });
-const accounts = await mock.getAccounts();
-// Returns deterministic test accounts for CI/unit tests
+const accounts = await mock.connect({ displayName: 'Test dApp' });
+const receipt = await mock.proposeTransaction({
+  kind: 'native_transfer',
+  from: accounts[0].accountId,
+  to: accounts[0].accountId,
+  amount: '500',
+});
 ```
 
-## 9. Error Codes
+## 8. Error Codes
 
 | Code | Meaning |
 | :--- | :--- |
 | `LZR-1003` | Invalid password / vault unlock failed |
+| `LZR-2001` | Session expired or invalid |
 | `LZR-2003` | Private balance read without `ReadPrivateBalance` permission |
+| `LZR-2004` | Privileged `wallet_call` invoked by a non-wallet module |
 | `LZR-3001` | User rejected the approval prompt |
-| `LZR-3003` | Simulation reverted / deterministic revert detected |
-| `LZR-3004` | Unacknowledged risk gate (authority change, unlimited approval) |
-| `LZR-3005` | Proposal digest mismatch (tampered intent) |
-| `LZR-4002` | Disallowed endpoint (zero-telemetry guard) |
-| `LZR-5001` | Prover queue busy (`Semaphore(1)`) |
-| `LZR-5004` | Nullifier locked in-flight (double-spend prevention) |
-| `LZR-6003` | Bytecode mismatch (LP-0023 `MismatchOrError`) |
+| `LZR-3003` | Precheck / insufficient balance |
+| `LZR-3004` | Unacknowledged risk gate (unverified program or critical authority change) |
+| `LZR-3005` | Proposal digest mismatch (tampered summary) |
+| `LZR-3006` | Transaction rejected by local pre-check or sequencer |
+| `LZR-3007` | Target program is not deployed on the configured network |
+| `LZR-4002` | Disallowed endpoint blocked (zero-telemetry guard) |
+| `LZR-5001` | Wallet engine busy with an in-flight operation |
 
-## 10. CLI Parity
+## 9. CLI Reference (`lezer`)
 
-Every GUI feature has a CLI equivalent. Use `lezer --help` or `lezer <command> --help` for details.
+Every GUI operation has a CLI counterpart (`--json` supported on every command):
 
 ```bash
-lezer account new --privacy public --label main
-lezer token send --from main --to Public/<recipient> --amount 50
-lezer testimonial submit --text "Verified!" --username @me
-lezer registry lookup --program lezer_testimonial
-LEZER_NO_VAULT=1 lezer verify-adoption --submission-id lp0021-lezer
+lezer init --network https://testnet.lez.logos.co
+lezer account new public --label alice
+lezer account new private --label shielded
+lezer account receive shielded
+lezer send --from main --to alice --amount 1000000000
+lezer program deploy programs/faucet/target/riscv32im-risc0-zkvm-elf/docker/lezer_faucet.bin --payer main
+lezer faucet claim --recipient alice
+lezer token define --definition tok-def --name "USD Coin" --symbol USDX --decimals 6 --supply 1000000 --authority main --payer main
+lezer testimonial submit --author main --username "@alice" --text "Lezer works!"
+lezer verify-adoption
+lezer registry register --subject lezer_testimonial --name "Lezer Testimonial" --source-url "https://github.com/zLabsHQ/lezer-wallet" --commit "v0.3.1" --version "0.3.1" --payer main
+lezer registry list
 ```
 
-## 11. Zero-Telemetry Policy
+## 10. Zero-Telemetry Policy
 
 Lezer Wallet makes **zero** outbound requests to third-party analytics or tracking services. The only allowed endpoints are:
 - User's configured LEZ sequencer (`https://testnet.lez.logos.co` or local node)
 - Optional Logos Storage/Codex node for encrypted backup
 
-This is enforced by `AllowedEndpointsGuard` in `lezer-adapter` and verified by `tooling/check-boundaries.sh` in CI.
+Enforced by `AllowedEndpointsGuard` in `lezer-adapter` and verified by `tooling/check-boundaries.sh` in CI.

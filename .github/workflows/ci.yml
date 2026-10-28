@@ -34,11 +34,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libclang-dev
       - name: Clippy Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Guest program unit tests (testimonial & token)
+      - name: Guest program unit tests (testimonial, token, registry, faucet)
         run: |
           cargo test --manifest-path programs/testimonial/Cargo.toml
           cargo test --manifest-path programs/token/Cargo.toml
           cargo test --manifest-path programs/registry/Cargo.toml
+          cargo test --manifest-path programs/faucet/Cargo.toml
       - name: Workspace tests (unit + conformance; sequencer E2E skips without env)
         run: cargo test --workspace
 
@@ -84,6 +85,8 @@ jobs:
             --manifest-path programs/token/Cargo.toml -p lezer_token
           RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build \
             --manifest-path programs/registry/Cargo.toml -p lezer_registry
+          RISC0_DOCKER_CONTAINER_TAG=r0.1.91.1 cargo risczero build \
+            --manifest-path programs/faucet/Cargo.toml -p lezer_faucet
       - name: Build lezer CLI
         run: cargo build -p lezer-cli
       - name: Run real-sequencer E2E
@@ -92,6 +95,7 @@ jobs:
           LEZER_E2E_TESTIMONIAL_ELF: ${{ github.workspace }}/programs/testimonial/target/riscv32im-risc0-zkvm-elf/docker/lezer_testimonial.bin
           LEZER_E2E_TOKEN_ELF: ${{ github.workspace }}/programs/token/target/riscv32im-risc0-zkvm-elf/docker/lezer_token.bin
           LEZER_E2E_REGISTRY_ELF: ${{ github.workspace }}/programs/registry/target/riscv32im-risc0-zkvm-elf/docker/lezer_registry.bin
+          LEZER_E2E_FAUCET_ELF: ${{ github.workspace }}/programs/faucet/target/riscv32im-risc0-zkvm-elf/docker/lezer_faucet.bin
         run: cargo test -p lezer-cli --test e2e_sequencer -- --nocapture
       - name: Sequencer log on failure
         if: failure()
