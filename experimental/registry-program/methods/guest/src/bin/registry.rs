@@ -9,7 +9,7 @@
 //! - `register_self`: Self-registers `lezer_registry` in itself per LP-0023 Supportability Criterion #4.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-pub use registry_core::{
+pub use registry_core_experimental::{
     MAX_ENTRIES_PER_REGISTRY_PAGE, REGISTRY_SHARD_COUNT, RegistryEntry, RegistryEntryKind,
     RegistryShardPage, apply_register_deployer, compute_program_shard,
 };

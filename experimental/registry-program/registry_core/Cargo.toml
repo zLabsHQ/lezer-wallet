@@ -1,5 +1,5 @@
 [package]
-name = "registry_core"
+name = "registry_core_experimental"
 version = "1.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"

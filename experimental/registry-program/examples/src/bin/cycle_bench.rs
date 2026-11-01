@@ -1,6 +1,6 @@
 //! RISC Zero guest cycle count benchmark for `lezer_registry::register_deployer` (`docs/04` §4).
 
-use registry_core::{apply_register_deployer, compute_program_shard};
+use registry_core_experimental::{apply_register_deployer, compute_program_shard};
 use serde_json::json;
 
 fn main() {

@@ -4,4 +4,4 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-registry_core = { path = "../registry_core" }
+registry_core_experimental = { path = "../registry_core" }
