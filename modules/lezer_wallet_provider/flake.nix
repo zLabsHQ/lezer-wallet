@@ -3,6 +3,10 @@
 
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder/8f56bf8";
+    # The builder's locked rust-overlay (Aug 2026) predates Rust 1.98.1, which
+    # `nix.rust.toolchain` selects; point it at a rev that knows 1.98.1.
+    rust-overlay.url = "github:oxalica/rust-overlay/6ecf534a7c16e7c969f26838fdd8c93597ae93f3";
+    logos-module-builder.inputs.rust-overlay.follows = "rust-overlay";
   };
 
   outputs = inputs@{ logos-module-builder, ... }:
