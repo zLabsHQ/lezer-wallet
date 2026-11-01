@@ -2185,7 +2185,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "faucet_core"
 version = "0.1.0"
-source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#4bb63353b899a9f5abe54b99728d9a5bfce31643"
+source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#e2a0e6d4ce04a0e87e476d8a2c993e1a2d68b28a"
 dependencies = [
  "borsh",
  "registry_core",
@@ -3740,7 +3740,7 @@ dependencies = [
 [[package]]
 name = "lezer-adapter"
 version = "0.1.0"
-source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#4bb63353b899a9f5abe54b99728d9a5bfce31643"
+source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#e2a0e6d4ce04a0e87e476d8a2c993e1a2d68b28a"
 dependencies = [
  "anyhow",
  "bip39",
@@ -3773,7 +3773,7 @@ dependencies = [
 [[package]]
 name = "lezer-core"
 version = "0.1.0"
-source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#4bb63353b899a9f5abe54b99728d9a5bfce31643"
+source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#e2a0e6d4ce04a0e87e476d8a2c993e1a2d68b28a"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3801,7 +3801,7 @@ dependencies = [
 [[package]]
 name = "lezer-provider"
 version = "0.1.0"
-source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#4bb63353b899a9f5abe54b99728d9a5bfce31643"
+source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#e2a0e6d4ce04a0e87e476d8a2c993e1a2d68b28a"
 dependencies = [
  "lezer-adapter",
  "lezer-core",
@@ -6524,11 +6524,10 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "registry_core"
-version = "1.0.0"
-source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#4bb63353b899a9f5abe54b99728d9a5bfce31643"
+version = "0.1.0"
+source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#e2a0e6d4ce04a0e87e476d8a2c993e1a2d68b28a"
 dependencies = [
  "borsh",
- "serde",
  "sha2 0.10.9",
 ]
 
@@ -7925,7 +7924,7 @@ dependencies = [
 [[package]]
 name = "testimonial_core"
 version = "0.2.0"
-source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#4bb63353b899a9f5abe54b99728d9a5bfce31643"
+source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#e2a0e6d4ce04a0e87e476d8a2c993e1a2d68b28a"
 dependencies = [
  "borsh",
  "registry_core",
@@ -8052,7 +8051,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 [[package]]
 name = "token_core"
 version = "0.1.0"
-source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#4bb63353b899a9f5abe54b99728d9a5bfce31643"
+source = "git+https://github.com/zLabsHQ/lezer-wallet?branch=master#e2a0e6d4ce04a0e87e476d8a2c993e1a2d68b28a"
 dependencies = [
  "borsh",
  "registry_core",
