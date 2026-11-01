@@ -14,7 +14,7 @@ crate-type = ["staticlib"]
 # Git dependency: the builder copies only this crate into the Nix sandbox, so in-repo
 # path deps would not resolve there. Local development uses the [patch] in
 # ../.cargo/config.toml. Cargo.lock (required by the builder) pins the exact commit.
-lezer-provider = { git = "https://github.com/zLabsHQ/lezer-wallet", branch = "main" }
+lezer-provider = { git = "https://github.com/zLabsHQ/lezer-wallet", branch = "master" }
 serde_json = "1"
 # Staged by logos-module-builder (`rust-sdk-src`) so the runtime matches the generator.
 logos-rust-sdk = { path = "../logos-rust-sdk-src" }

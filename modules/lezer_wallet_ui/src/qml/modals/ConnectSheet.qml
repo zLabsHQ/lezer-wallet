@@ -36,13 +36,15 @@ Rectangle {
                     Layout.fillWidth: true
                     CheckBox {
                         text: (modelData.kind === "private" ? "🔒 " : "") + Fmt.label(modelData) + "  " + Fmt.shortId(modelData.account_id)
-                        onToggled: { var s = sheet.selected; s[modelData.account_id] = checked; sheet.selected = s }
+                        checked: !!sheet.selected[modelData.account_id]
+                        onToggled: { var s = Object.assign({}, sheet.selected); s[modelData.account_id] = checked; sheet.selected = s }
                     }
                     Item { Layout.fillWidth: true }
                     CheckBox {
                         visible: modelData.kind === "private" && !!sheet.selected[modelData.account_id]
                         text: "allow balance reads"
-                        onToggled: { var p = sheet.privateRead; p[modelData.account_id] = checked; sheet.privateRead = p }
+                        checked: !!sheet.privateRead[modelData.account_id]
+                        onToggled: { var p = Object.assign({}, sheet.privateRead); p[modelData.account_id] = checked; sheet.privateRead = p }
                     }
                 }
             }

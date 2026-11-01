@@ -30,6 +30,9 @@ result
 result-*
 .direnv/
 
+# ── Third-party checkouts (CI fetches these itself) ───────────────────────────
+third_party/
+
 # ── CMake / Qt (module builds) ───────────────────────────────────────────────
 # NOTE: programs/*/Makefile is hand-written and must stay tracked — only
 # generated Makefiles under modules/ are ignored.

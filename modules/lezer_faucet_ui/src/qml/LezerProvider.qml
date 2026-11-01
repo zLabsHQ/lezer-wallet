@@ -48,7 +48,7 @@ QtObject {
                 provider._call("get_request_status", [id], function (r) {
                     if (r.status === "pending" || r.status === "executing") return
                     var kind = provider._pending[id]
-                    var p = provider._pending; delete p[id]; provider._pending = p
+                    var p = Object.assign({}, provider._pending); delete p[id]; provider._pending = p
                     provider.busy = false
                     if (r.status === "rejected") provider.failed(r.code, r.reason)
                     else if (kind === "connect") {
@@ -62,7 +62,7 @@ QtObject {
     }
 
     function _track(id, kind) {
-        var p = provider._pending; p[id] = kind; provider._pending = p
+        var p = Object.assign({}, provider._pending); p[id] = kind; provider._pending = p
         provider._poll.start()
     }
 

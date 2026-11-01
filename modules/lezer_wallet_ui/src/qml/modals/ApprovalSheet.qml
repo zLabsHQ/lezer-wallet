@@ -15,7 +15,7 @@ Rectangle {
     color: "#cc000000"
 
     readonly property var s: request ? request.summary_json : null
-    readonly property bool blocked: s && s.precheck && s.precheck.result === "insufficient_funds"
+    readonly property bool blocked: !!(s && s.precheck && (s.precheck.result === "insufficient_funds" || s.precheck.result === "blocked"))
     readonly property var badgeColors: ({
         protocol_builtin: "#81c995", verified_source: "#81c995", known_but_unverified: "#8ab4f8",
         no_registry_entry: "#fdd663", mismatch_or_error: "#f28b82"
@@ -65,7 +65,9 @@ Rectangle {
             Label {
                 visible: sheet.blocked
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#f28b82"
-                text: sheet.blocked ? "Insufficient balance: available " + Fmt.toDisplay(sheet.s.precheck.available) + ", required " + Fmt.toDisplay(sheet.s.precheck.required) : ""
+                text: !sheet.blocked ? ""
+                      : sheet.s.precheck.result === "blocked" ? sheet.s.precheck.reason
+                      : "Insufficient balance: available " + Fmt.toDisplay(sheet.s.precheck.available) + ", required " + Fmt.toDisplay(sheet.s.precheck.required)
             }
             CheckBox { id: ackBox; visible: !!(sheet.s && sheet.s.requires_unverified_ack); text: "I understand this program's source is not verified" }
             CheckBox { id: overrideBox; visible: !!(sheet.s && sheet.s.requires_critical_override); text: "I understand this is a critical, irreversible operation" }

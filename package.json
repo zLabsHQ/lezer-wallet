@@ -11,6 +11,7 @@
     "check:boundaries": "./tooling/check-boundaries.sh",
     "spikes": "./tooling/run-spikes.sh",
     "test:rust": "cargo test --workspace",
+    "typecheck": "tsc --noEmit -p packages/provider && tsc --noEmit -p packages/registry && tsc -p apps/lezer-portal",
     "test": "./tooling/check-boundaries.sh && cargo test --workspace"
   },
   "devDependencies": {

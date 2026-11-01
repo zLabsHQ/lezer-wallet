@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -20,7 +21,7 @@ Item {
             view.tokenIds = r.token_ids || []
             view.tokenIds.forEach(function (id) {
                 view.store.call({ op: "token_info", token_id: id }, function (info) {
-                    var m = view.tokens; m[id] = info; view.tokens = m
+                    var m = Object.assign({}, view.tokens); m[id] = info; view.tokens = m
                 }, function () {})
             })
             view.refreshBalances()
@@ -32,7 +33,7 @@ Item {
             view.store.accounts.forEach(function (a) {
                 if (a.kind !== "public") return
                 view.store.call({ op: "token_balance", token_id: tid, account: a.account_id }, function (r) {
-                    var m = view.tokenBalances; m[tid + "|" + a.account_id] = r.balance; view.tokenBalances = m
+                    var m = Object.assign({}, view.tokenBalances); m[tid + "|" + a.account_id] = r.balance; view.tokenBalances = m
                 }, function () {})
             })
         })
@@ -40,7 +41,7 @@ Item {
 
     function balanceOf(tid, accountId) { return view.tokenBalances[tid + "|" + accountId] || "0" }
 
-    property string accountKey: store.accounts.map(function (a) { return a.account_id }).join(",")
+    property string accountKey: view.store.accounts.map(function (a) { return a.account_id }).join(",")
     onAccountKeyChanged: refreshBalances()
     Component.onCompleted: refresh()
     Connections { target: view.store; function onJobFinished() { view.refresh() } }
@@ -57,7 +58,7 @@ Item {
             Button {
                 text: "Track"
                 enabled: trackId.text.length > 0
-                onClicked: store.call({ op: "token_track", token_id: trackId.text }, function () { trackId.text = ""; view.refresh() })
+                onClicked: view.store.call({ op: "token_track", token_id: trackId.text }, function () { trackId.text = ""; view.refresh() })
             }
         }
 
@@ -65,37 +66,39 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 8
             model: view.tokenIds
             delegate: Rectangle {
+                id: tokenRow
+                required property string modelData
+                readonly property string tokenId: modelData
+                readonly property var info: view.tokens[tokenId]
                 width: ListView.view.width; height: tokenCol.implicitHeight + 24; radius: 8; color: "#1b1f27"
-                readonly property var info: view.tokens[modelData]
                 ColumnLayout {
                     id: tokenCol
                     anchors.fill: parent; anchors.margins: 12; spacing: 6
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: info ? info.symbol : "…"; color: "#e8eaed"; font.bold: true; font.pixelSize: 15 }
-                        Label { text: info ? info.name : ""; color: "#9aa0a6" }
+                        Label { text: tokenRow.info ? tokenRow.info.symbol : "…"; color: "#e8eaed"; font.bold: true; font.pixelSize: 15 }
+                        Label { text: tokenRow.info ? tokenRow.info.name : ""; color: "#9aa0a6" }
                         Item { Layout.fillWidth: true }
-                        Label { text: info ? "supply " + info.total_supply : ""; color: "#9aa0a6"; font.pixelSize: 11 }
-                        Label { text: info && info.authority ? "authority " + Fmt.shortId(info.authority) : "fixed supply"; color: "#9aa0a6"; font.pixelSize: 11 }
+                        Label { text: tokenRow.info ? "supply " + tokenRow.info.total_supply : ""; color: "#9aa0a6"; font.pixelSize: 11 }
+                        Label { text: tokenRow.info && tokenRow.info.authority ? "authority " + Fmt.shortId(tokenRow.info.authority) : "fixed supply"; color: "#9aa0a6"; font.pixelSize: 11 }
                     }
-                    Label { text: modelData; color: "#6b7280"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                    Label { text: tokenRow.tokenId; color: "#6b7280"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
 
                     Repeater {
-                        model: store.accounts.filter(function (a) { return a.kind === "public" })
+                        model: view.store.accounts.filter(function (a) { return a.kind === "public" })
                         delegate: RowLayout {
+                            id: holderRow
+                            required property var modelData
                             Layout.fillWidth: true
-                            Label { text: Fmt.label(modelData); color: "#c5c8ce"; font.pixelSize: 12; Layout.preferredWidth: 140 }
+                            Label { text: Fmt.label(holderRow.modelData); color: "#c5c8ce"; font.pixelSize: 12; Layout.preferredWidth: 140 }
                             Label {
                                 color: "#e8eaed"; Layout.fillWidth: true
-                                text: (function () {
-                                    var info = view.tokens[view.tokenIds[index]]
-                                    var d = info ? info.decimals : 9
-                                    return Fmt.toDisplayD(view.balanceOf(view.tokenIds[index], modelData.account_id), d)
-                                })()
+                                text: Fmt.toDisplayD(view.balanceOf(tokenRow.tokenId, holderRow.modelData.account_id),
+                                                     tokenRow.info ? tokenRow.info.decimals : 9)
                             }
                             Button {
-                                text: "Send"; enabled: info !== undefined
-                                onClicked: sendSheet.openFor(view.tokenIds[index], modelData.account_id)
+                                text: "Send"; enabled: tokenRow.info !== undefined
+                                onClicked: sendSheet.openFor(tokenRow.tokenId, holderRow.modelData.account_id)
                             }
                         }
                     }
@@ -116,7 +119,7 @@ Item {
             Label { text: "From " + Fmt.shortId(sendSheet.fromAccount); color: "#9aa0a6"; elide: Text.ElideMiddle }
             ComboBox {
                 id: toBox; Layout.fillWidth: true
-                model: store.accounts.filter(function (a) { return a.kind === "public" && a.account_id !== sendSheet.fromAccount })
+                model: view.store.accounts.filter(function (a) { return a.kind === "public" && a.account_id !== sendSheet.fromAccount })
                 textRole: "account_id"; displayText: currentText ? Fmt.shortId(currentText) : ""
             }
             TextField { id: amountField; placeholderText: "Amount (token units)"; Layout.fillWidth: true }
@@ -132,7 +135,7 @@ Item {
                         if (!atomic) { sendErr.text = "invalid amount"; return }
                         sendErr.text = ""
                         sendSheet.close()
-                        store.runJob({ op: "token_transfer", token_id: sendSheet.tokenId,
+                        view.store.runJob({ op: "token_transfer", token_id: sendSheet.tokenId,
                                        from: sendSheet.fromAccount, to: toBox.currentText,
                                        amount: atomic, payer: sendSheet.fromAccount }, "token transfer", function () { view.refresh() })
                     }

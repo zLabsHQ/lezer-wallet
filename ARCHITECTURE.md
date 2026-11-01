@@ -10,7 +10,7 @@ Lezer Wallet is built on three non-negotiable principles:
 
 1. **Rust is the Sole Source of Wallet Truth.** All key custody, encrypted vault persistence, session management, approval digest enforcement, and chain interactions live inside `lezer-core` and `lezer-adapter` (wrapping the official upstream `wallet::WalletCore` `v0.3.1`).
 2. **Basecamp QML is the Native Launch UI.** The wallet runs as a Logos Basecamp module (`lezer_wallet_ui`) paired with a caller-authenticated C-ABI provider (`lezer_wallet_provider`) — privileged operations check `logos_rust_sdk::current_caller()` rather than any shared string secret.
-3. **Zero Blind Signing, Zero Charged Reverts, Zero Telemetry.** Every dApp proposal is summarized into a canonical `TransactionSummary` bound by SHA-256 digest, enriched with live on-chain `lezer_registry` (LP-0023) verification badges, and pre-checked against shard state before signing so doomed calls are rejected locally before broadcast.
+3. **Zero Blind Signing, Zero Charged Reverts, Zero Telemetry.** Every dApp proposal is summarized into a canonical `TransactionSummary` bound by SHA-256 digest, enriched with a live on-chain `lezer_registry` (LP-0023) source-status badge, and pre-checked against shard state before signing so doomed calls are rejected locally before broadcast.
 
 ---
 
@@ -77,7 +77,7 @@ Owns all wallet state and security invariants with zero direct upstream imports:
 - `vault.rs`: `SealedVaultEnvelopeV1` (Argon2id `m=64 MiB, t=3, p=4` → XChaCha20-Poly1305 → SHA-256 header MAC) wrapping the upstream wallet storage + Lezer sessions, activity journal, and tracked tokens. Atomic write-temp-fsync-rename with `0600` permissions.
 - `autolock.rs`: 15-minute inactivity timer with `DeferredLockPending` while a ZK proof or program deployment is in flight.
 - `broker.rs`: `ApprovalBroker` managing `DappConnectRequest`, `SessionGrant` (`PermissionScope::ReadPrivateBalance` gate), `PendingProposal`, and `take_verified_proposal` (enforcing `LZR-3005` digest binding and `LZR-3004` risk gates).
-- `intent.rs` & `summary.rs`: Translates all 7 `TxIntent` variants (`NativeTransfer`, `SubmitTestimonial`, `FaucetClaim`, `TokenTransfer`, `TokenMint`, `TokenBurn`, `TokenSetAuthority`) into `TransactionSummary` with live `lezer_registry` `VerifiedSource` badges and `CriticalRedOverride` warnings on authority changes.
+- `intent.rs` & `summary.rs`: Translates all 7 `TxIntent` variants (`NativeTransfer`, `SubmitTestimonial`, `FaucetClaim`, `TokenTransfer`, `TokenMint`, `TokenBurn`, `TokenSetAuthority`) into `TransactionSummary` with `CriticalRedOverride` warnings on authority changes and a live `lezer_registry` badge: `KnownButUnverified` (program self-registered with a declared source@commit) or `NoRegistryEntry`. `VerifiedSource` is reserved for a reproducible-build attestation, which is not implemented yet, so the wallet never shows it.
 
 ### 3.3 `crates/lezer-provider` & `modules/lezer_wallet_provider`
 

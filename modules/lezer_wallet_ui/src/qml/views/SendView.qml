@@ -71,12 +71,13 @@ Item {
     Dialog {
         id: confirm
         anchors.centerIn: parent
+        width: 460
         modal: true
         title: "Confirm " + view.mode + " transfer"
         standardButtons: Dialog.Cancel | Dialog.Ok
         Label {
             wrapMode: Text.Wrap
-            width: 420
+            width: confirm.availableWidth
             text: "Send " + Fmt.toDisplay(view.atomic) + "\nfrom " + (view.fromAccount ? view.fromAccount.account_id : "") + "\nto " + view.toText
         }
         onAccepted: {

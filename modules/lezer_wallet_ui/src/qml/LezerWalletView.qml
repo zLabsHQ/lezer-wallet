@@ -104,16 +104,19 @@ Rectangle {
     }
 
     // Pending dApp requests are shown modally, one at a time, until resolved.
+    // Each sheet only ever receives requests of its own kind.
+    readonly property var pendingConnect: pendingTop !== null && pendingTop.kind === "connect" ? pendingTop : null
+    readonly property var pendingProposal: pendingTop !== null && pendingTop.kind === "proposal" ? pendingTop : null
     ConnectSheet {
         anchors.fill: parent
-        visible: root.unlocked && root.pendingTop !== null && root.pendingTop.kind === "connect"
-        request: root.pendingTop
+        visible: root.unlocked && root.pendingConnect !== null
+        request: root.pendingConnect
         store: walletStore
     }
     ApprovalSheet {
         anchors.fill: parent
-        visible: root.unlocked && root.pendingTop !== null && root.pendingTop.kind === "proposal"
-        request: root.pendingTop
+        visible: root.unlocked && root.pendingProposal !== null
+        request: root.pendingProposal
         store: walletStore
     }
 }

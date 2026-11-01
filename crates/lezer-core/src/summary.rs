@@ -50,6 +50,9 @@ pub struct SecurityWarning {
 pub enum Precheck {
     Passed { available: String },
     InsufficientFunds { available: String, required: String },
+    /// The program would deterministically reject the call (e.g. faucet rate limit);
+    /// `reason` is shown to the user verbatim.
+    Blocked { reason: String },
     /// Balance could not be read (e.g. offline). Approval is still possible; the network
     /// will reject the transaction if funds are insufficient.
     Unavailable { reason: String },
@@ -96,7 +99,7 @@ impl TransactionSummary {
     }
 
     pub fn blocks_approval(&self) -> bool {
-        matches!(self.precheck, Precheck::InsufficientFunds { .. })
+        matches!(self.precheck, Precheck::InsufficientFunds { .. } | Precheck::Blocked { .. })
     }
 }
 

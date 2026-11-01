@@ -300,10 +300,11 @@ impl ApprovalBroker {
         }
 
         if proposal.summary.blocks_approval() {
-            return Err(LezerError::new(
-                ErrorCode::SimulationReverted,
-                "cannot approve: sender balance does not cover the amount",
-            ));
+            let reason = match &proposal.summary.precheck {
+                Precheck::Blocked { reason } => format!("cannot approve: {reason}"),
+                _ => "cannot approve: sender balance does not cover the amount".to_string(),
+            };
+            return Err(LezerError::new(ErrorCode::SimulationReverted, reason));
         }
 
         if proposal.summary.requires_unverified_ack && !decision.acknowledged_unverified {

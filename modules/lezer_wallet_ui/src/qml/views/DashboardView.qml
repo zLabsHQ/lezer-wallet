@@ -14,7 +14,7 @@ Item {
     function refreshBalances() {
         store.accounts.forEach(function (a) {
             store.call({ op: "balance", account: a.account_id }, function (b) {
-                var m = view.balances; m[a.account_id] = b; view.balances = m
+                var m = Object.assign({}, view.balances); m[a.account_id] = b; view.balances = m
             }, function () {})
         })
     }

@@ -112,33 +112,39 @@ fn short(id: &str) -> String {
     }
 }
 
+/// Badge for a SPEL program call. A registry entry proves the *program itself* registered
+/// (chained-call auth) and declared its source; it does not prove a reproducible rebuild
+/// matches the deployed image, so it maps to `KnownButUnverified`, never `VerifiedSource`.
 fn build_program_badge(
     program_name: &str,
     program_id: Option<&str>,
     registry_entry: Option<&RegistryEntry>,
 ) -> (SourceVerificationBadge, bool) {
     match (program_id, registry_entry) {
-        (Some(pid), Some(entry)) if !entry.source_url.is_empty() && !entry.commit.is_empty() => {
-            let short_commit = &entry.commit[..entry.commit.len().min(10)];
+        (Some(pid), Some(entry)) => {
+            let commit = &entry.commit[..entry.commit.len().min(12)];
+            let source = if entry.source_url.is_empty() {
+                "no source declared".to_string()
+            } else {
+                format!("source {} @ {}", entry.source_url, if commit.is_empty() { "?" } else { commit })
+            };
             (
                 SourceVerificationBadge {
-                    state: VerificationBadgeState::VerifiedSource,
+                    state: VerificationBadgeState::KnownButUnverified,
                     label: format!(
-                        "{} {} — verified in LP-0023 registry ({} @ {})",
-                        entry.name, entry.version, entry.source_url, short_commit
+                        "Registered in LP-0023 registry as “{} {}” — {source} (self-declared; reproducible build not verified)",
+                        entry.name, entry.version
                     ),
                     program_name: program_name.into(),
                     program_id: pid.to_string(),
                 },
-                false,
+                true,
             )
         }
-        (Some(pid), _) => (
+        (Some(pid), None) => (
             SourceVerificationBadge {
-                state: VerificationBadgeState::KnownButUnverified,
-                label: format!(
-                    "{program_name} (configured for this network; source not yet verified in LP-0023 registry)"
-                ),
+                state: VerificationBadgeState::NoRegistryEntry,
+                label: format!("{program_name}: no LP-0023 registry entry on this network — source unknown"),
                 program_name: program_name.into(),
                 program_id: pid.to_string(),
             },
@@ -483,22 +489,22 @@ mod tests {
     }
 
     #[test]
-    fn verified_registry_entry_produces_verified_source_badge_and_clears_ack() {
+    fn registry_entry_is_known_but_never_claimed_as_verified_source() {
         let intent = TxIntent::SubmitTestimonial {
             author: "Public/author1".into(),
             username: "alice".into(),
             text: "Lezer works!".into(),
         };
-        let ctx_unverified = SummarizeContext {
+        let ctx_absent = SummarizeContext {
             target_program_id: Some("Public/prog1".into()),
             registry_entry: None,
             ..Default::default()
         };
-        let s_unverified = summarize("p1", "dapp", &intent, Precheck::Passed { available: "100".into() }, &ctx_unverified);
-        assert_eq!(s_unverified.verification_badge.state, VerificationBadgeState::KnownButUnverified);
-        assert!(s_unverified.requires_unverified_ack);
+        let s_absent = summarize("p1", "dapp", &intent, Precheck::Passed { available: "100".into() }, &ctx_absent);
+        assert_eq!(s_absent.verification_badge.state, VerificationBadgeState::NoRegistryEntry);
+        assert!(s_absent.requires_unverified_ack);
 
-        let ctx_verified = SummarizeContext {
+        let ctx_registered = SummarizeContext {
             target_program_id: Some("Public/prog1".into()),
             registry_entry: Some(RegistryEntry {
                 program_id: "Public/prog1".into(),
@@ -509,10 +515,12 @@ mod tests {
             }),
             ..Default::default()
         };
-        let s_verified = summarize("p2", "dapp", &intent, Precheck::Passed { available: "100".into() }, &ctx_verified);
-        assert_eq!(s_verified.verification_badge.state, VerificationBadgeState::VerifiedSource);
-        assert!(!s_verified.requires_unverified_ack);
-        assert!(s_verified.digest_is_valid());
+        let s = summarize("p2", "dapp", &intent, Precheck::Passed { available: "100".into() }, &ctx_registered);
+        assert_eq!(s.verification_badge.state, VerificationBadgeState::KnownButUnverified);
+        assert!(s.verification_badge.label.contains("Lezer Testimonial 0.3.1"));
+        assert!(s.verification_badge.label.contains("not verified"));
+        assert!(s.requires_unverified_ack);
+        assert!(s.digest_is_valid());
     }
 
     #[test]
@@ -546,7 +554,7 @@ mod tests {
         };
         let s_xfer = summarize("p3", "dex", &xfer, Precheck::Passed { available: "1000".into() }, &ctx);
         assert!(s_xfer.headline.contains("USDX"));
-        assert_eq!(s_xfer.verification_badge.state, VerificationBadgeState::VerifiedSource);
+        assert_eq!(s_xfer.verification_badge.state, VerificationBadgeState::KnownButUnverified);
         assert!(!s_xfer.requires_critical_override);
 
         let renounce = TxIntent::TokenSetAuthority {

@@ -1005,8 +1005,9 @@ impl WalletEngine {
         self.balance(account_id).await
     }
 
+    /// Program the intent calls, normalized to `Public/<id>` for display and digests.
     fn target_program_for_intent(&self, intent: &TxIntent) -> Option<String> {
-        match intent {
+        let id = match intent {
             TxIntent::NativeTransfer { .. } => None,
             TxIntent::SubmitTestimonial { .. } => self.testimonial_program(),
             TxIntent::FaucetClaim { .. } => self.faucet_program(),
@@ -1014,7 +1015,8 @@ impl WalletEngine {
             | TxIntent::TokenMint { .. }
             | TxIntent::TokenBurn { .. }
             | TxIntent::TokenSetAuthority { .. } => self.token_program(),
-        }
+        }?;
+        Some(if id.starts_with("Public/") { id } else { format!("Public/{id}") })
     }
 
     async fn precheck(&mut self, intent: &TxIntent, target_program: Option<&str>) -> Precheck {
@@ -1043,15 +1045,11 @@ impl WalletEngine {
                     return Precheck::Unavailable { reason: "lezer_faucet not deployed".into() };
                 };
                 match self.faucet_status(prog, Some(recipient)).await {
-                    Ok(st) if st.already_claimed => Precheck::InsufficientFunds {
-                        available: "0 (already claimed)".into(),
-                        required: st.drip_amount,
+                    Ok(st) if st.already_claimed => Precheck::Blocked {
+                        reason: "Rate limit: this account has already claimed its faucet allocation. Choose another public account.".into(),
                     },
                     Ok(st) if st.vault_balance.parse::<u128>().unwrap_or(0) < lezer_adapter::DEFAULT_DRIP_AMOUNT => {
-                        Precheck::InsufficientFunds {
-                            available: st.vault_balance,
-                            required: st.drip_amount,
-                        }
+                        Precheck::Blocked { reason: "The faucet treasury is empty; try again after it is refilled.".into() }
                     }
                     Ok(st) => Precheck::Passed { available: st.vault_balance },
                     Err(e) => Precheck::Unavailable { reason: e.message },

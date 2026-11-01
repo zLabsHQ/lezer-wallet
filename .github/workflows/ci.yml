@@ -16,6 +16,14 @@ jobs:
         run: ./tooling/check-boundaries.sh
       - name: Validate Basecamp Module Catalog (logos-repo.json)
         run: ./tooling/release-catalog.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Typecheck TypeScript SDKs & portal
+        run: |
+          npx -y -p typescript@5.6.3 tsc --noEmit -p packages/provider
+          npx -y -p typescript@5.6.3 tsc --noEmit -p packages/registry
+          npx -y -p typescript@5.6.3 tsc -p apps/lezer-portal
 
   rust-unit:
     strategy:

@@ -137,7 +137,7 @@ const tokenReceipt = await provider.proposeTransaction({
 
 1. **`modules/lezer_testimonial_ui` (`TestimonialView.qml`)**:
    - Connects via `LezerProvider.qml`, filters shared `Public/` accounts, and proposes `{ kind: "submit_testimonial", author, username, text }`.
-   - `lezer-core` queries `lezer_registry` on-chain to attach a `VerifiedSource` badge and an amber privacy notice (`WARN_PUBLIC_ONCHAIN_DATA`) before the user approves.
+   - `lezer-core` reads the program's `lezer_registry` entry on-chain and shows its registered name, version and declared source@commit (badge `known_but_unverified`; `no_registry_entry` if unregistered), plus an amber privacy notice (`WARN_PUBLIC_ONCHAIN_DATA`), before the user approves.
 2. **`modules/lezer_faucet_ui` (`FaucetView.qml`)**:
    - Connects via `LezerProvider.qml`, lets the user select which shared `Public/` account receives 50 LEZ, and proposes `{ kind: "faucet_claim", recipient }`.
    - `lezer-core` pre-checks the recipient's on-chain claim-ticket PDA and the faucet treasury PDA (`custody_transfer`) so rate-limited accounts receive an immediate error instead of a charged revert.

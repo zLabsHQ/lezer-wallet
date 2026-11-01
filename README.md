@@ -20,7 +20,7 @@ Named after the community identity for LEZ builders and runners (*"LEZers"*), Le
 
 - **For Users:** A unified, non-custodial, privacy-first key and asset manager that supports both transparent public accounts and fully shielded private accounts.
 - **For Developers:** A standard **Wallet Provider SDK** (`@lezer/provider` + `lezer_wallet_provider` LIDL module) enabling any Basecamp dApp to connect, request permissions, and propose transactions — with zero blind signing.
-- **For the Ecosystem:** An on-chain **LP-0023 Program Registry** providing cryptographic source verification badges for every program a user interacts with.
+- **For the Ecosystem:** An on-chain **LP-0023 Program Registry** where programs register themselves (unforgeable chained-call auth); the approval sheet shows each called program's registry status and declared source. Reproducible-build attestation (`VerifiedSource`) is planned.
 
 ## Why Lezer?
 
@@ -113,7 +113,7 @@ Every dApp-facing method (`get_accounts`, `get_balance`, `propose_transaction`) 
 | **Core Module Interface** | LIDL C-ABI (`lezer_wallet_provider.lidl` → `cdylib` with `logos_rust_sdk`) |
 | **TypeScript SDKs** | `@lezer/provider`, `@lezer/registry` (strict TS, ESM) |
 | **On-Chain Programs** | SPEL RISC0 guest programs (`lezer_testimonial`, `lezer_token`, `lezer_faucet`, `lezer_registry`) |
-| **Web Portal** | Next.js 15 Static Export (`apps/lezer-portal`) — zero server, zero custody |
+| **Web Portal** | `apps/lezer-portal` — typed content/data modules (typechecked); rendered static site not built yet |
 | **Build & Package** | Nix flakes (`mkLogosModule`, `mkLogosQmlModule`), `lgpd` module catalog |
 | **CI/CD** | GitHub Actions + `logos-co/logos-modules-release-action@v1` |
 
@@ -142,7 +142,7 @@ lezer-wallet/
 ├── templates/
 │   └── lezer-dapp-template/    # Forkable Basecamp dApp starter
 ├── apps/
-│   └── lezer-portal/           # Next.js static portal (docs, playground, adoption & registry views)
+│   └── lezer-portal/           # Portal content modules (docs, SDK playground, adoption & registry data)
 ├── tests/
 │   └── conformance/            # Error taxonomy conformance fixtures
 └── tooling/                    # Boundary checks, module catalog validator, real-chain demo.sh

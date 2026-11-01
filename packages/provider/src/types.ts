@@ -24,6 +24,7 @@ export interface SecurityWarning {
 export type Precheck =
   | { result: 'passed'; available: string }
   | { result: 'insufficient_funds'; available: string; required: string }
+  | { result: 'blocked'; reason: string }
   | { result: 'unavailable'; reason: string };
 
 export type PrivacyMode = 'public' | 'shielded' | 'deshielded' | 'private';

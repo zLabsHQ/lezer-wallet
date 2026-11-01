@@ -216,12 +216,13 @@ On-Chain Verification (LEZ state machine)
 
 | Badge | Meaning | Signing Policy |
 | :--- | :--- | :--- |
-| `VerifiedSource` | Bytecode matches registered source (reproducible build verified) | Normal approval flow |
-| `KnownButUnverified` | Program registered but source not yet verified | Warning shown |
-| `NoRegistryEntry` | Program not in LP-0023 registry | Warning + fail-closed option |
-| `MismatchOrError` | Bytecode does NOT match registered source | **Fail-closed by default** |
+| `ProtocolBuiltin` | Built-in LEZ program (native token) | Normal approval flow |
+| `KnownButUnverified` | Program self-registered in `lezer_registry` with a declared source@commit; no reproducible-build check | Explicit acknowledgement required |
+| `NoRegistryEntry` | Program not in the LP-0023 registry | Explicit acknowledgement required |
+| `VerifiedSource` | Reserved: needs a reproducible-build attestation (not implemented) | Never shown today |
+| `MismatchOrError` | Reserved: rebuild contradicts the deployed image | Never shown today |
 
-The `lezer_registry` program uses `caller_program_id` chained calls to authenticate deployer self-registration — only the program itself can register its own entry.
+The `lezer_registry` program keys entries by `caller_account_id` from a chained call, so only the program itself can register its own entry. The declared source URL and commit are still the deployer's own claim.
 
 ---
 

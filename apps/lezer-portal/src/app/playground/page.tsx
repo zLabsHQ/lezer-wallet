@@ -1,4 +1,4 @@
-import { MockLezerProvider } from '../../../../packages/provider/src/mock-provider';
+import { MockLezerProvider } from '../../../../../packages/provider/src/mock-provider';
 
 /**
  * `@lezer/provider` playground backed by `MockLezerProvider` (no keys, no chain).
