@@ -24,6 +24,26 @@
         x86_64-linux = { platform = "linux-x86_64"; sha256 = "92a0c6ad810d486631518b7b9b247a2b66f66af6f8f8ddce381acbbdfedc0f7f"; };
         aarch64-linux = { platform = "linux-aarch64"; sha256 = "1eaa3e339d85d741dd70314c4ad45b7ee67c2baaf6c55e35170801161c372d7b"; };
       };
+
+      # rust-rapidsnark's build.rs downloads prebuilt archives unless
+      # RAPIDSNARK_LIB_DIR is set. Mirror the URLs + digests upstream publishes in
+      # logos-blockchain-rust-rapidsnark/{flake.nix,nix-hashes.json} (PIC archives
+      # for Linux, iden3 upstream for macOS).
+      rapidsnarkVersion = "0.0.8";
+      rapidsnarkAssets = {
+        aarch64-darwin = {
+          url = "https://github.com/iden3/rapidsnark/releases/download/v${rapidsnarkVersion}/rapidsnark-macOS-arm64-v${rapidsnarkVersion}.zip";
+          hash = "sha256-DmhMmMq7/HKsx+Iz4rdsKYBDEwqwMZALo+ZJePJvAJg=";
+        };
+        x86_64-linux = {
+          url = "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark/releases/download/rapidsnark-pic-v${rapidsnarkVersion}/rapidsnark-linux-x86_64-pic-v${rapidsnarkVersion}.zip";
+          hash = "sha256-88+TkECQYCKBN0WbYLRB+qi6TEhbjVfrpCqlSgm0DR8=";
+        };
+        aarch64-linux = {
+          url = "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark/releases/download/rapidsnark-pic-v${rapidsnarkVersion}/rapidsnark-linux-aarch64-pic-v${rapidsnarkVersion}.zip";
+          hash = "sha256-kcSITwWZjEv9gadzYL7LiG+DVtEEFbQJuhd/LTyOxJU=";
+        };
+      };
       systems = builtins.attrNames circuits;
 
       moduleFor = system:
@@ -38,12 +58,25 @@
           circuitsRoot = pkgs.runCommand name { } ''
             mkdir -p $out && tar -xzf ${tarball} -C $out --strip-components=1
           '';
+          r = rapidsnarkAssets.${system};
+          rapidsnarkLib = pkgs.stdenv.mkDerivation {
+            pname = "rapidsnark-prebuilt";
+            version = rapidsnarkVersion;
+            phases = [ "installPhase" ];
+            src = pkgs.fetchzip { inherit (r) url hash; };
+            installPhase = ''
+              mkdir -p $out && cp $src/lib/* $out/
+            '';
+          };
         in
         logos-module-builder.lib.mkLogosModule {
           src = ./.;
           configFile = ./metadata.json;
           flakeInputs = inputs;
-          rustEnv = { LBC_ROOT_DIR = "${circuitsRoot}"; };
+          rustEnv = {
+            LBC_ROOT_DIR = "${circuitsRoot}";
+            RAPIDSNARK_LIB_DIR = "${rapidsnarkLib}";
+          };
           # librocksdb-sys/risc0 need libclang (bindgen); keycard needs pcsc on Linux.
           rustExtraNativeBuildInputs = [ pkgs.rustPlatform.bindgenHook pkgs.pkg-config ];
           rustExtraBuildInputs = lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
