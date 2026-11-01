@@ -1,6 +1,3 @@
-[patch."https://github.com/zLabsHQ/lezer-wallet"]
-lezer-provider = { path = "../../crates/lezer-provider" }
-
 # Upstream build_utils walks ancestors of the crate dir for artifacts/, which
 # cargo-vendor strips. This shim adds a LEE_ARTIFACTS_DIR override the Nix
 # build sets; the ancestor walk still serves normal checkouts.
