@@ -32,6 +32,9 @@ result-*
 
 # ── Third-party checkouts (CI fetches these itself) ───────────────────────────
 third_party/
+# Staged by logos-module-builder during Nix builds; regenerate locally via the
+# same mechanism when producing rust-lib/Cargo.lock.
+modules/lezer_wallet_provider/logos-rust-sdk-src/
 
 # ── CMake / Qt (module builds) ───────────────────────────────────────────────
 # NOTE: programs/*/Makefile is hand-written and must stay tracked — only
