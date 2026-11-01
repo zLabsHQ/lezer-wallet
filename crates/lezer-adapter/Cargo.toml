@@ -38,7 +38,9 @@ common.workspace = true
 key_protocol.workspace = true
 sequencer_service_rpc.workspace = true
 risc0-binfmt = "3.0.2"
-testimonial_core = { path = "../../programs/testimonial/core" }
-token_core = { path = "../../programs/token/core" }
-registry_core = { path = "../../programs/registry/core" }
-faucet_core = { path = "../../programs/faucet/core" }
+# version pins matter: in a git dep the path hint degrades to a name+version
+# lookup across the repo, and experimental/ ships a colliding registry_core@1.0.0
+testimonial_core = { version = "0.2.0", path = "../../programs/testimonial/core" }
+token_core = { version = "0.1.0", path = "../../programs/token/core" }
+registry_core = { version = "0.1.0", path = "../../programs/registry/core" }
+faucet_core = { version = "0.1.0", path = "../../programs/faucet/core" }

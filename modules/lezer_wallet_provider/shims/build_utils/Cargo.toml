@@ -1,0 +1,14 @@
+[package]
+name = "build_utils"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# Drop-in for logos-execution-zone's build_utils, patched in via
+# ../../.cargo/config.toml so the Nix vendored build can point at a prefetched
+# artifacts tree via LEE_ARTIFACTS_DIR. Upstream semantics are unchanged
+# without the env var.
+
+[dependencies]
+anyhow = "1"
+risc0-binfmt = "3.0.2"

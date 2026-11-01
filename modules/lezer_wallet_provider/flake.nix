@@ -68,6 +68,17 @@
               mkdir -p $out && cp $src/lib/* $out/
             '';
           };
+          # Upstream build_utils walks ancestors of the crate for artifacts/;
+          # cargo vendor strips them, so we ship the v0.3.1 artifacts tree and
+          # point the patched shim at it via LEE_ARTIFACTS_DIR (rustEnv below).
+          lezTarball = pkgs.fetchurl {
+            url = "https://github.com/logos-blockchain/logos-execution-zone/archive/refs/tags/v0.3.1.tar.gz";
+            sha256 = "7b5a7be99fee3594b148f064f14bca8d4bbc824138f6283518bb20cf381e84c0";
+          };
+          leeArtifacts = pkgs.runCommand "lez-v0.3.1-artifacts" { } ''
+            mkdir -p $TMP/src && tar -xzf ${lezTarball} -C $TMP/src
+            mkdir -p $out && cp -r $TMP/src/*/artifacts $out/artifacts
+          '';
         in
         logos-module-builder.lib.mkLogosModule {
           src = ./.;
@@ -76,6 +87,7 @@
           rustEnv = {
             LBC_ROOT_DIR = "${circuitsRoot}";
             RAPIDSNARK_LIB_DIR = "${rapidsnarkLib}";
+            LEE_ARTIFACTS_DIR = "${leeArtifacts}/artifacts";
           };
           # librocksdb-sys/risc0 need libclang (bindgen); keycard needs pcsc on Linux.
           rustExtraNativeBuildInputs = [ pkgs.rustPlatform.bindgenHook pkgs.pkg-config ];
